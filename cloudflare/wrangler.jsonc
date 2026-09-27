@@ -1,0 +1,21 @@
+{
+  "name": "el-okaby-ai-gateway",
+  "main": "src/index.mjs",
+  "compatibility_date": "2026-09-01",
+  "triggers": { "crons": ["0 5 * * *"] },
+  "workers_dev": true,
+  "vars": {
+    "GITHUB_OWNER": "SET_GITHUB_OWNER",
+    "GITHUB_REPO": "SET_NEW_REPO",
+    "ALLOWED_WA_NUMBERS": "",
+    "OAUTH_ALLOWED_REDIRECT_URIS": "",
+    "PUBLIC_BASE_URL": "https://REPLACE_WITH_WORKER.workers.dev",
+    "META_API_VERSION": "v26.0"
+  },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "el-okaby-ai-jobs", "database_id": "REPLACE_WITH_D1_ID", "migrations_dir": "migrations" }
+  ],
+  "r2_buckets": [
+    { "binding": "REPORTS", "bucket_name": "el-okaby-ai-private-reports" }
+  ]
+}
