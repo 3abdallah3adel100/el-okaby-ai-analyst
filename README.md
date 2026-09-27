@@ -28,7 +28,7 @@ GitHub handles **every actual Meta query and all analytics**; Cloudflare never c
 ## Capabilities implemented
 
 - New independent codebase; no dependencies on prior project.
-- Arbitrary named Meta tokens (one JSON Secret), business IDs, account allowlist, deterministic token ownership, account discovery; token values never appear in responses.
+- Arbitrary named Meta tokens (one JSON Secret), automatic /me/adaccounts discovery, best-effort /me/businesses owned/client discovery, optional account scope and optional token preference; token values never appear in responses.
 - Dynamic read-only field/level/date/breakdown/filter Meta Insights API query, safe bounds, 28-day windowing, cursors, rate-limit backoff and usage headers. Important: no fixed WhatsApp/LeadGen reports; cost-per-result requires explicit Meta `action_type`; no untyped leads aggregation. Meta validates requested field combinations.
 - Deterministic aggregation, explicit partial/failed-account status, ad creative **metadata** discovery (not actual image/video understanding), CSV/XLSX/PDF private exports.
 - Read-only Remote MCP via Streamable HTTP; OAuth authorization code with S256 PKCE, dynamic client registration, owner login, short-lived access token + rotating refresh token. **Needs live security review and ChatGPT account validation.**
@@ -47,3 +47,7 @@ GitHub handles **every actual Meta query and all analytics**; Cloudflare never c
 - No automatic budget/spend hard-stop for OpenAI API; set project budget alerts and monitor usage. Proactive monitoring and daily summaries require a separately approved WhatsApp template with one body-text variable. The code blocks proactive free-form messages when this is missing.
 
 **Detailed Arabic setup:** [`docs/START_HERE_AR.md`](docs/START_HERE_AR.md). **Verification checklist:** [`docs/VERIFY.md`](docs/VERIFY.md).
+
+
+### v1.1 account discovery
+`META_TOKENS_JSON` is the only mandatory Meta account-configuration Secret. Leave `META_ACCOUNT_ALLOWLIST`, `META_ACCOUNT_TOKEN_MAP_JSON`, and `META_BUSINESS_IDS` unset to enumerate accounts available to each token automatically. Multiple token aliases are supported; duplicates are merged. The optional allowlist is only for explicit owner scoping; explicit business IDs may supplement permissions-limited discovery. Only token-visible IDs can be queried. API errors and incomplete discovery are reported, not silently treated as zero.
