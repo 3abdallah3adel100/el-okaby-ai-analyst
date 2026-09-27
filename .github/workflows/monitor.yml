@@ -1,0 +1,45 @@
+name: El Okaby Monitoring (opt-in pilot)
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: el-okaby-monitor
+  cancel-in-progress: false
+jobs:
+  monitor:
+    if: vars.ENABLE_MONITORING == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Monitor private metrics
+        env:
+          PYTHONPATH: .
+          ENABLE_MONITORING: ${{ vars.ENABLE_MONITORING }}
+          ALERT_ACTION_TYPE: ${{ vars.ALERT_ACTION_TYPE }}
+          ALERT_TEMPLATE_NAME: ${{ vars.ALERT_TEMPLATE_NAME }}
+          ALERT_TEMPLATE_LANGUAGE: ${{ vars.ALERT_TEMPLATE_LANGUAGE }}
+          ALERT_RECIPIENT: ${{ secrets.ALERT_RECIPIENT }}
+          ALERT_MIN_SPEND_EGP: ${{ vars.ALERT_MIN_SPEND_EGP }}
+          ALERT_CPL_MULTIPLIER: ${{ vars.ALERT_CPL_MULTIPLIER }}
+          GATEWAY_BASE_URL: ${{ secrets.GATEWAY_BASE_URL }}
+          JOB_SHARED_SECRET: ${{ secrets.JOB_SHARED_SECRET }}
+          META_TOKENS_JSON: ${{ secrets.META_TOKENS_JSON }}
+          META_ACCOUNT_ALLOWLIST: ${{ vars.META_ACCOUNT_ALLOWLIST }}
+          META_ACCOUNT_TOKEN_MAP_JSON: ${{ vars.META_ACCOUNT_TOKEN_MAP_JSON }}
+          META_BUSINESS_IDS: ${{ vars.META_BUSINESS_IDS }}
+          META_AGENT_MAP_JSON: ${{ vars.META_AGENT_MAP_JSON }}
+          META_GRAPH_VERSION: ${{ vars.META_GRAPH_VERSION }}
+          WHATSAPP_ACCESS_TOKEN: ${{ secrets.WHATSAPP_ACCESS_TOKEN }}
+          WHATSAPP_WABA_ID: ${{ vars.WHATSAPP_WABA_ID }}
+          WHATSAPP_PHONE_NUMBER_ID: ${{ vars.WHATSAPP_PHONE_NUMBER_ID }}
+        run: python -m engine.monitor
