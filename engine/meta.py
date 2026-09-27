@@ -48,8 +48,8 @@ def parse_tokens() -> dict[str,str]:
  return obj
 
 def allowlist()->list[str]:
+ """Optional owner-specified scope; empty means all accounts *actually exposed by the tokens*."""
  ids=[clean_account(a) for a in os.getenv('META_ACCOUNT_ALLOWLIST','').split(',') if a.strip()]
- if not ids:raise ValueError('META_ACCOUNT_ALLOWLIST required; unrestricted account discovery is disabled')
  return sorted(set(ids))
 
 def account_token_map()->dict[str,str]:
@@ -83,7 +83,9 @@ def validate_query(p:dict)->dict:
  if rawids is None:rawids=[]
  if not isinstance(rawids,list) or len(rawids)>100:raise ValueError('Invalid account selection')
  permitted=set(allowlist()); requested=list(dict.fromkeys(clean_account(i) for i in rawids)) if rawids else sorted(permitted)
- if not set(requested)<=permitted:raise ValueError('Account outside approved allowlist')
+ if permitted and not set(requested)<=permitted:raise ValueError('Account outside configured optional account scope')
+ # No manual scope: an empty request means 'discover all accounts this token can access'.
+ # MetaClient.insights() resolves it against real discovery before making any Insights call.
  since=p.get('since');until=p.get('until');preset=p.get('date_preset')
  if bool(since)!=bool(until):raise ValueError('Both since and until are required')
  if since:
@@ -145,46 +147,87 @@ class MetaClient:
     raise MetaError(last) from ex
   raise MetaError(last)
  def discover(self)->dict:
-  allowed=set(allowlist());selected=account_token_map();accounts={};errors=[];usage={}
+  """Discover token-visible accounts, with optional business enrichment and optional scope.
+
+  Accounts are never inferred from numeric IDs supplied by the model. Only Meta-returned
+  IDs can be queried; duplicate IDs are merged across tokens. No token values are returned.
+  """
   if hasattr(self,'_discovery_cache'):return self._discovery_cache
+  allowed=set(allowlist());preferred=account_token_map()
+  accounts={};errors=[];warnings=[];usage={};businesses_by_alias={}
+  coverage_complete=True
+  def add_account(a,alias,source,business_id=None):
+   nonlocal accounts
+   try:aid=clean_account(a['id'])
+   except (KeyError,ValueError,TypeError):
+    warnings.append({'token_alias':alias,'source':source,'warning':'Meta returned an invalid account ID'});return
+   if allowed and aid not in allowed:return
+   if aid not in accounts:
+    accounts[aid]={**{k:v for k,v in a.items() if k!='id'},'id':aid,'token_alias':alias,'token_aliases':[alias],'discovered_via':[source]}
+    if business_id:accounts[aid]['business_id']=business_id
+   else:
+    item=accounts[aid]
+    if alias not in item['token_aliases']:item['token_aliases'].append(alias)
+    if source not in item['discovered_via']:item['discovered_via'].append(source)
+    if business_id and 'business_id' not in item:item['business_id']=business_id
+    if preferred.get(aid)==alias:item['token_alias']=alias
+  def pages(path,alias,fields,source,limit=30,required=False):
+   nonlocal coverage_complete
+   after=None;seen=set()
+   for _ in range(limit):
+    try:
+     payload,head=self.request(path,alias,{'fields':fields,'limit':100,**({'after':after} if after else {})})
+     if head:usage[alias]=head
+     for item in payload.get('data',[]):yield item
+     page=payload.get('paging',{});nxt=page.get('cursors',{}).get('after')
+     # A terminal page has neither a next URL nor a novel cursor.
+     if not page.get('next'):break
+     if not nxt or nxt==after or nxt in seen:
+      coverage_complete=False
+      errors.append({'token_alias':alias,'source':source,'error':'Pagination cannot be completed'});break
+     seen.add(nxt);after=nxt
+    except Exception as ex:
+     entry={'token_alias':alias,'source':source,'error':str(ex)[:230]}
+     (errors if required else warnings).append(entry)
+     if required:coverage_complete=False
+     break
+   else:
+    coverage_complete=False
+    errors.append({'token_alias':alias,'source':source,'error':'Pagination safety limit reached'})
+  extra=[x.strip() for x in os.getenv('META_BUSINESS_IDS','').split(',') if x.strip()]
+  for biz in extra:
+   if not biz.isdigit():raise ValueError('META_BUSINESS_IDS must be comma-separated numeric business IDs')
   for alias in self.tokens:
-   for path in ['/me/adaccounts']:
-    after=None
-    for _ in range(30):
-     try:
-      p,head=self.request(path,alias,{'fields':'id,name,account_status,timezone_name,business{id,name}','limit':100,**({'after':after} if after else {})})
-      if head:usage[alias]=head
-      for a in p.get('data',[]):
-       aid=clean_account(a['id']);
-       if aid not in allowed:continue
-       if aid in selected and selected[aid]!=alias:continue
-       if aid not in accounts:accounts[aid]={**{k:v for k,v in a.items() if k!='id'},'id':aid,'token_alias':alias}
-      nxt=p.get('paging',{}).get('cursors',{}).get('after')
-      if not nxt or nxt==after:break
-      after=nxt
-     except Exception as ex:errors.append({'token_alias':alias,'source':'me/adaccounts','error':str(ex)});break
-  # Business discovery is optional enrichment; one failed business must not hide working accounts.
-  businesses=[x.strip() for x in os.getenv('META_BUSINESS_IDS','').split(',') if x.strip()]
-  for biz in businesses:
-   if not biz.isdigit():errors.append({'business_id':biz,'error':'Invalid business ID'});continue
-   for alias in self.tokens:
-    for edge in ['owned_ad_accounts','client_ad_accounts']:
-     after=None
-     for _ in range(20):
-      try:
-       p,_=self.request('/'+biz+'/'+edge,alias,{'fields':'id,name,account_status,timezone_name','limit':100,**({'after':after} if after else {})})
-       for a in p.get('data',[]):
-        aid=clean_account(a['id']);
-        if aid in allowed and (aid not in selected or selected[aid]==alias) and aid not in accounts:accounts[aid]={**{k:v for k,v in a.items() if k!='id'},'id':aid,'token_alias':alias,'business_id':biz}
-       nxt=p.get('paging',{}).get('cursors',{}).get('after')
-       if not nxt or nxt==after:break
-       after=nxt
-      except Exception as ex:errors.append({'token_alias':alias,'business_id':biz,'edge':edge,'error':str(ex)});break
-  missing=sorted(allowed-set(accounts))
-  self._discovery_cache={'accounts':list(accounts.values()),'missing_account_ids':missing,'errors':errors,'api_call_count':self.calls,'usage_headers':usage,'live_at_utc':dt.datetime.now(dt.timezone.utc).isoformat()}
+   for a in pages('/me/adaccounts',alias,'id,name,account_status,timezone_name,business{id,name}','me/adaccounts',required=True):
+    add_account(a,alias,'me/adaccounts')
+   business_ids=set(extra)
+   # Best-effort automatic Business discovery; this edge may be unavailable to
+   # system-user tokens. /me/adaccounts continues to work if it is denied.
+   for b in pages('/me/businesses',alias,'id,name','me/businesses',limit=10):
+    bid=str(b.get('id',''))
+    if bid.isdigit():business_ids.add(bid)
+   businesses_by_alias[alias]=len(business_ids)
+   for biz in sorted(business_ids):
+    for edge in ('owned_ad_accounts','client_ad_accounts'):
+     source=f'{biz}/{edge}'
+     for a in pages('/'+biz+'/'+edge,alias,'id,name,account_status,timezone_name',source,limit=20):
+      add_account(a,alias,source,biz)
+  missing=sorted(allowed-set(accounts)) if allowed else []
+  if missing:coverage_complete=False
+  if not accounts:coverage_complete=False
+  self._discovery_cache={'accounts':sorted(accounts.values(),key=lambda a:a['id']),
+   'account_count':len(accounts),'token_count':len(self.tokens),
+   'scope':'optional_allowlist' if allowed else 'all_token_accessible_accounts',
+   'discovery_complete':coverage_complete,
+   'missing_account_ids':missing,'errors':errors,'warnings':warnings,
+   'business_count_by_token':businesses_by_alias,
+   'api_call_count':self.calls,'usage_headers':usage,
+   'live_at_utc':dt.datetime.now(dt.timezone.utc).isoformat()}
   return self._discovery_cache
  def insights(self,params:dict)->dict:
   p=validate_query(params);discovered=self.discover();index={a['id']:a for a in discovered['accounts']}
+  if not p['account_ids']:
+   p['account_ids']=sorted(index)  # Default: all accounts found through authorized tokens.
   rows=[];failed=[];window_errors=[];usage={};truncated=False
   for aid in p['account_ids']:
    if aid not in index:
@@ -218,4 +261,4 @@ class MetaClient:
     else:truncated=True
     if truncated:break
    if truncated:break
-  return {'rows':rows,'requested_account_ids':p['account_ids'],'account_errors':failed+window_errors,'discovery_errors':discovered['errors'],'row_count':len(rows),'truncated':truncated,'complete':not(truncated or failed or window_errors),'api_call_count':self.calls,'usage_headers':usage,'query':p,'live_at_utc':dt.datetime.now(dt.timezone.utc).isoformat(),'freshness_note':'Requested from Meta during this job; action attribution may lag.'}
+  return {'rows':rows,'requested_account_ids':p['account_ids'],'account_errors':failed+window_errors,'discovery_errors':discovered['errors'],'row_count':len(rows),'truncated':truncated,'complete':bool(p['account_ids']) and discovered.get('discovery_complete',False) and not(truncated or failed or window_errors),'discovery_complete':discovered.get('discovery_complete',False),'discovered_account_count':len(index),'discovery_warnings':discovered.get('warnings',[]),'api_call_count':self.calls,'usage_headers':usage,'query':p,'live_at_utc':dt.datetime.now(dt.timezone.utc).isoformat(),'freshness_note':'Requested from Meta during this job; action attribution may lag.'}

@@ -7,7 +7,7 @@ import os
 from .meta import CATALOG
 
 TOOLS=[
- {'type':'function','function':{'name':'discover_accounts','description':'List configured authorized Meta ad accounts','parameters':{'type':'object','properties':{},'additionalProperties':False}}},
+ {'type':'function','function':{'name':'discover_accounts','description':'Discover all authorized ad accounts accessible via the tokens; user selection is optional','parameters':{'type':'object','properties':{},'additionalProperties':False}}},
  {'type':'function','function':{'name':'discover_fields','description':'Show Meta field and breakdown examples, metrics rules','parameters':{'type':'object','properties':{},'additionalProperties':False}}},
  {'type':'function','function':{'name':'query_meta','description':'Fetch fresh Meta Insights. Never mix unspecified actions as generic leads. Choose explicit fields and optional action_type.','parameters':{'type':'object','properties':{'account_ids':{'type':'array','items':{'type':'string'}},'fields':{'type':'array','items':{'type':'string'}},'level':{'type':'string'},'since':{'type':'string'},'until':{'type':'string'},'date_preset':{'type':'string'},'breakdowns':{'type':'array','items':{'type':'string'}},'action_type':{'type':'string'},'row_limit':{'type':'integer'},'time_increment':{'type':'string'}},'additionalProperties':False}}},
  {'type':'function','function':{'name':'inspect_creatives','description':'Fetch creative metadata for selected accounts; metadata is not full video content','parameters':{'type':'object','properties':{'account_ids':{'type':'array','items':{'type':'string'}},'row_limit':{'type':'integer'}},'additionalProperties':False}}},

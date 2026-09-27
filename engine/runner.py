@@ -28,9 +28,11 @@ def gateway(path,method='GET',data=None,mime='application/json'):
 def creative_metadata(client,params):
  from .meta import validate_query
  p=validate_query({**params,'fields':['ad_id']})
- ids=p['account_ids'];out=[];errors=[];lim=min(p['row_limit'],500)
+ discovered=client.discover()
+ ids=p['account_ids'] or [a['id'] for a in discovered['accounts']]
+ out=[];errors=[];lim=min(p['row_limit'],500)
  for aid in ids:
-  aliases=client.discover()['accounts'] # correct access, no guessing token mapping
+  aliases=discovered['accounts'] # correct access, no guessing token mapping
   found=next((a for a in aliases if a['id']==aid),None)
   if not found:errors.append({'account_id':aid,'error':'Unreachable'});continue
   cursor=None
