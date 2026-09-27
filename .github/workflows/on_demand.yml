@@ -1,0 +1,41 @@
+name: El Okaby AI job (pilot)
+on:
+  repository_dispatch:
+    types: [el_okaby_job]
+permissions:
+  contents: read
+concurrency:
+  group: el-okaby-${{ github.event.client_payload.job_id }}
+  cancel-in-progress: false
+jobs:
+  query:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install minimal dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Process private job by ID
+        env:
+          PYTHONPATH: .
+          JOB_ID: ${{ github.event.client_payload.job_id }}
+          GATEWAY_BASE_URL: ${{ secrets.GATEWAY_BASE_URL }}
+          JOB_SHARED_SECRET: ${{ secrets.JOB_SHARED_SECRET }}
+          META_TOKENS_JSON: ${{ secrets.META_TOKENS_JSON }}
+          META_ACCOUNT_ALLOWLIST: ${{ vars.META_ACCOUNT_ALLOWLIST }}
+          META_ACCOUNT_TOKEN_MAP_JSON: ${{ vars.META_ACCOUNT_TOKEN_MAP_JSON }}
+          META_BUSINESS_IDS: ${{ vars.META_BUSINESS_IDS }}
+          META_AGENT_MAP_JSON: ${{ vars.META_AGENT_MAP_JSON }}
+          META_GRAPH_VERSION: ${{ vars.META_GRAPH_VERSION }}
+          MAX_META_CALLS_PER_JOB: ${{ vars.MAX_META_CALLS_PER_JOB }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          WHATSAPP_ACCESS_TOKEN: ${{ secrets.WHATSAPP_ACCESS_TOKEN }}
+          WHATSAPP_WABA_ID: ${{ vars.WHATSAPP_WABA_ID }}
+          WHATSAPP_PHONE_NUMBER_ID: ${{ vars.WHATSAPP_PHONE_NUMBER_ID }}
+        run: python -m engine.runner --job-id "$JOB_ID"
