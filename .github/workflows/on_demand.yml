@@ -10,7 +10,7 @@ concurrency:
 jobs:
   query:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,6 +33,9 @@ jobs:
           META_AGENT_MAP_JSON: ${{ vars.META_AGENT_MAP_JSON }}
           META_GRAPH_VERSION: ${{ vars.META_GRAPH_VERSION }}
           MAX_META_CALLS_PER_JOB: ${{ vars.MAX_META_CALLS_PER_JOB }}
+          MAX_META_CALLS_PER_HEAVY_JOB: ${{ vars.MAX_META_CALLS_PER_HEAVY_JOB }}
+          HEAVY_RUN_BUDGET_MINUTES: ${{ vars.HEAVY_RUN_BUDGET_MINUTES }}
+          HEAVY_MAX_CONTINUATIONS: ${{ vars.HEAVY_MAX_CONTINUATIONS }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           WHATSAPP_ACCESS_TOKEN: ${{ secrets.WHATSAPP_ACCESS_TOKEN }}
