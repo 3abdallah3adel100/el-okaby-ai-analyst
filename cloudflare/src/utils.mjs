@@ -1,4 +1,4 @@
-export const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers } });
+export const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options':'nosniff', ...headers } });
 export const err = (message, status = 400) => json({ error: message }, status);
 export const uuid = () => crypto.randomUUID();
 export const randomToken = (n = 32) => { const b = new Uint8Array(n); crypto.getRandomValues(b); return base64url(b); };
@@ -27,7 +27,7 @@ export function isAllowedRedirect(uri, allowedCsv) {
 export function validJobRequest(a) {
   if (!a || typeof a !== 'object' || Array.isArray(a)) throw new Error('Arguments must be a JSON object');
   const mode = String(a.mode || 'query_meta');
-  if (!['discover_accounts','discover_fields','query_meta','analyze_data','export_report','inspect_creatives'].includes(mode)) throw new Error('Unsupported request mode');
+  if (!['discover_accounts','discover_fields','query_meta','analyze_data','export_report','inspect_creatives','start_historical_audit'].includes(mode)) throw new Error('Unsupported request mode');
   const p = a.params || {};
   if (typeof p !== 'object' || !p || Array.isArray(p) || JSON.stringify(p).length > 13000) throw new Error('Invalid parameters');
   return { mode, params: p };
