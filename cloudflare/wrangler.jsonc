@@ -13,7 +13,7 @@
     "META_API_VERSION": "v26.0"
   },
   "d1_databases": [
-    { "binding": "DB", "database_name": "el-okaby-ai-jobs", "database_id": "REPLACE_WITH_D1_ID", "migrations_dir": "migrations" }
+    { "binding": "DB", "database_name": "el-okaby-ai-jobs", "database_id": "9c00fb74-1adc-4d43-b8e6-603db8b495cd", "migrations_dir": "migrations" }
   ],
   "r2_buckets": [
     { "binding": "REPORTS", "bucket_name": "el-okaby-ai-private-reports" }
