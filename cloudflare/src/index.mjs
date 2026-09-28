@@ -100,6 +100,7 @@ const tools=[
  {name:'export_report',description:'Legacy direct Meta query export. For generic long jobs, analyze/query the stored dataset after completion.',inputSchema:{type:'object',properties:{query:{type:'object'},format:{type:'string',enum:['csv','xlsx','pdf']},title:{type:'string'}},required:['query','format'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
  {name:'start_historical_audit',description:'Legacy specialized Lead Generation audit kept for backward compatibility. New open-ended requests should normally use start_analysis_job.',inputSchema:{type:'object',properties:{account_ids:{type:'array',items:{type:'string'},maxItems:100},since:{type:'string'},until:{type:'string'},target_cpl:{type:'number',minimum:0},min_winner_leads:{type:'integer',minimum:3,maximum:10000},min_potential_leads:{type:'integer',minimum:1,maximum:10000},include_daily_consistency:{type:'boolean'}},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
  {name:'resume_analysis_job',description:'Resume the SAME failed start_analysis_job parent job from its existing private R2 checkpoint. Does not create a new logical job or restart completed scopes. Intended for recoverable infrastructure/storage failures after a backend upgrade.',inputSchema:{type:'object',properties:{job_id:{type:'string'}},required:['job_id'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'repair_analysis_job',description:'Repair ONLY failed scopes inside an already completed start_analysis_job parent dataset. Retries failed daily windows adaptively, retries oversized creative reads with smaller pages, and can rebuild post objects. Repaired rows are merged directly into the SAME parent R2 dataset; it does not restart the full historical extraction.',inputSchema:{type:'object',properties:{parent_job_id:{type:'string'},repair_daily:{type:'boolean'},repair_creatives:{type:'boolean'},repair_posts:{type:'boolean'}},required:['parent_job_id'],additionalProperties:false},annotations:{readOnlyHint:false},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
  {name:'get_job',description:'Poll an asynchronous logical job. For start_analysis_job, queued/running/continuing belong to the SAME logical job ID. On DONE, use query_job_data or aggregate_job_data to reason over its stored datasets without re-querying Meta.',inputSchema:{type:'object',properties:{job_id:{type:'string'}},required:['job_id'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]}
 ];
 
@@ -113,7 +114,7 @@ async function mcp(req,e){
  const answer=(result)=>json({jsonrpc:'2.0',id,result},200,{'mcp-protocol-version':'2025-06-18'});
  const rpcErr=(message,code=-32602)=>json({jsonrpc:'2.0',id,error:{code,message}});
  if(id===undefined)return rpcErr('Request id required',-32600);
- if(method==='initialize')return answer({protocolVersion:'2025-06-18',capabilities:{tools:{}},serverInfo:{name:'el-okaby-ai-analyst',version:'2.1.0'}});
+ if(method==='initialize')return answer({protocolVersion:'2025-06-18',capabilities:{tools:{}},serverInfo:{name:'el-okaby-ai-analyst',version:'2.2.0'}});
  if(method==='ping')return answer({});
  if(method==='tools/list')return answer({tools});
  if(method!=='tools/call')return rpcErr('Method not found',-32601);
@@ -144,6 +145,16 @@ async function mcp(req,e){
    return answer({content:[{type:'text',text:JSON.stringify(await resumeAnalysisJob(e,a.job_id,'owner'))}]});
   }
 
+  if(name==='repair_analysis_job'){
+   if(!/^[0-9a-f-]{36}$/i.test(a.parent_job_id||''))throw Error('Invalid parent_job_id');
+   const parent=await row(d1(e).prepare('SELECT actor,status,input_json FROM jobs WHERE id=?'),a.parent_job_id);
+   if(!parent||parent.actor!=='owner')throw Error('Parent job not found');
+   let parentInput={};try{parentInput=JSON.parse(parent.input_json||'{}');}catch{}
+   if(parentInput.mode!=='start_analysis_job')throw Error('repair_analysis_job requires a start_analysis_job parent');
+   if(parent.status!=='done')throw Error('Parent analysis job must be done before targeted repair');
+   if(!e.REPORTS||!await e.REPORTS.head('datasets/'+a.parent_job_id+'.sqlite3.gz'))throw Error('Parent persisted dataset not found');
+  }
+
   if(['discover_accounts','discover_fields','describe_meta_capabilities'].includes(name)) {
    if(Object.keys(a).length)throw Error('No arguments expected');
   }
@@ -158,6 +169,7 @@ async function mcp(req,e){
      meta_read:'fresh Meta read via a small job',
      start_analysis_job:'long-running logical job with checkpoint/resume on the same job_id and sharded R2 storage for large periodic Insights',
      resume_analysis_job:'resume the same failed logical parent job from its existing checkpoint after recoverable infrastructure/storage failures',
+     repair_analysis_job:'targeted repair of failed scopes in an already completed parent dataset; merges into the same parent R2 dataset',
      get_job:'direct job-status read',
      query_job_data:'reads a persisted job dataset; no new Meta extraction',
      aggregate_job_data:'aggregates a persisted job dataset; no new Meta extraction'
@@ -179,7 +191,8 @@ async function mcp(req,e){
      'automatic migration of legacy large SQLite daily rows into R2 shards',
      'partitioned gzip JSONL R2 shards for multi-million-row daily Insights',
      'small metadata-only checkpoints and final dataset indexes',
-     'stored dataset querying and deterministic aggregation after extraction'
+     'stored dataset querying and deterministic aggregation after extraction',
+     'targeted failed-scope repair without restarting full historical extraction'
     ],
     safety:[
      'read-only analytics engine',
@@ -187,7 +200,7 @@ async function mcp(req,e){
      'Meta remains the final validator for field/breakdown compatibility',
      'missing or unavailable fields are never fabricated'
     ],
-    version:'2.1.0'
+    version:'2.2.0'
    };
    return answer({content:[{type:'text',text:JSON.stringify(capabilities)}]});
   }
@@ -426,6 +439,10 @@ async function internalEndpoint(req,e,path){
    await e.REPORTS.put(key,req.body,{httpMetadata:{contentType:'application/gzip'}});
    return json({ok:true,key,size:length});
   }
+  if(req.method==='DELETE'){
+   await e.REPORTS.delete(key);
+   return json({ok:true,key,deleted:true});
+  }
   return fail('Method not allowed',405);
  }
  if(path[3]==='dataset'){
@@ -444,6 +461,17 @@ async function internalEndpoint(req,e,path){
    return json({ok:true});
   }
   return fail('Method not allowed',405);
+ }
+ if(req.method==='POST'&&path[3]==='sync-analysis-result'){
+  let p;try{p=JSON.parse(await bodyLimit(req,100000));}catch{return fail('Bad JSON');}
+  if(j.status!=='done')return fail('Parent analysis job must be completed before repair sync',409);
+  let current={};try{current=JSON.parse(j.result_json||'{}')||{};}catch{}
+  const merged={...current,...p};
+  let result=JSON.stringify(merged);
+  if(result.length>170000 && merged.previews){delete merged.previews;result=JSON.stringify(merged);}
+  if(result.length>170000)return fail('Merged parent result too large',413);
+  await run(d1(e).prepare('UPDATE jobs SET result_json=?,updated_at=? WHERE id=? AND status=?'),result,now(),id,'done');
+  return json({ok:true});
  }
  if(req.method==='POST'&&path[3]==='progress'){
   let p;try{p=JSON.parse(await bodyLimit(req,20000));}catch{return fail('Bad JSON');}

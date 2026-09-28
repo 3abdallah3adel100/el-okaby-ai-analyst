@@ -29,11 +29,11 @@ export function validJobRequest(a) {
   const mode = String(a.mode || 'query_meta');
   const allowed = [
     'discover_accounts','discover_fields','query_meta','analyze_data','export_report','inspect_creatives','start_historical_audit',
-    'describe_meta_capabilities','meta_read','start_analysis_job','resume_analysis_job','query_job_data','aggregate_job_data'
+    'describe_meta_capabilities','meta_read','start_analysis_job','resume_analysis_job','repair_analysis_job','query_job_data','aggregate_job_data'
   ];
   if (!allowed.includes(mode)) throw new Error('Unsupported request mode');
   const p = a.params || {};
-  const max = mode === 'start_analysis_job' ? 60000 : 18000;
+  const max = ['start_analysis_job','repair_analysis_job'].includes(mode) ? 60000 : 18000;
   if (typeof p !== 'object' || !p || Array.isArray(p) || JSON.stringify(p).length > max) throw new Error('Invalid parameters');
   return { mode, params: p };
 }
