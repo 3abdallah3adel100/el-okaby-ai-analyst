@@ -71,26 +71,31 @@ async function outputJob(e,id,actor){
 }
 
 const tools=[
- {name:'discover_accounts',description:'Discover authorized Meta ad accounts through configured access tokens. No account data is invented; errors and token coverage are returned.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
- {name:'discover_fields',description:'Get the Meta query field/action catalog and constraints. The catalog is advisory; Meta validates requested fields at execution.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
- {name:'query_meta',description:'Run a fresh Meta Marketing API Insights query. Choose arbitrary Meta fields, breakdowns, level, date range or date_preset, account_ids, action_type, row_limit. For large queries use async job polling. Do not treat generic results as a common metric across objectives.',inputSchema:{type:'object',properties:{account_ids:{type:'array',items:{type:'string'}},level:{type:'string',enum:['account','campaign','adset','ad']},fields:{type:'array',items:{type:'string'}},breakdowns:{type:'array',items:{type:'string'}},since:{type:'string'},until:{type:'string'},date_preset:{type:'string'},time_increment:{type:['integer','string']},action_type:{type:'string'},row_limit:{type:'integer',minimum:1,maximum:10000},filtering:{type:'array',items:{type:'object'}}},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
- {name:'inspect_creatives',description:'Read authorized ad creative metadata and media references; does not claim to interpret full video content.',inputSchema:{type:'object',properties:{account_ids:{type:'array',items:{type:'string'}},row_limit:{type:'integer',minimum:1,maximum:500}},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
- {name:'analyze_data',description:'Run fresh Meta queries then deterministic numeric analysis, grouped by chosen fields and with an explicit action_type when calculating costs. Time comparisons and winners are possible without fixed reports.',inputSchema:{type:'object',properties:{query:{type:'object'},group_by:{type:'array',items:{type:'string'}},action_type:{type:'string'},min_spend:{type:'number'},sort_by:{type:'string'},top_n:{type:'integer',minimum:1,maximum:100}},required:['query'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
- {name:'export_report',description:'Produce a private CSV/XLSX/PDF from an on-demand query; returns a job id then a short-lived download URL from get_job.',inputSchema:{type:'object',properties:{query:{type:'object'},format:{type:'string',enum:['csv','xlsx','pdf']},title:{type:'string'}},required:['query','format'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
- {name:'start_historical_audit',description:'Start ONE resumable full historical Lead Generation audit across all accessible Meta ad accounts (or selected accounts), including account discovery, lifetime and daily performance, creative metadata, deterministic Winner/Potential/Underperformer classification, scan coverage/errors, and a private XLSX workbook. Use this tool for broad historical audit/report requests instead of decomposing the request into many query_meta/analyze_data calls. The logical audit checkpoints to private R2 and can continue across multiple GitHub runs.',inputSchema:{type:'object',properties:{account_ids:{type:'array',items:{type:'string'},maxItems:100},since:{type:'string'},until:{type:'string'},target_cpl:{type:'number',minimum:0},min_winner_leads:{type:'integer',minimum:3,maximum:10000},min_potential_leads:{type:'integer',minimum:1,maximum:10000},include_daily_consistency:{type:'boolean'}},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
- {name:'get_job',description:'Poll an asynchronous Meta job and return results or a private report download link. Does not re-query cached metrics as current data.',inputSchema:{type:'object',properties:{job_id:{type:'string'}},required:['job_id'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]}
+ {name:'discover_accounts',description:'Discover all Meta ad accounts actually accessible through the configured access tokens. Use before planning only when account coverage itself is needed.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'discover_fields',description:'Legacy dynamic Insights field/action catalog. Field lists are examples; Meta remains the final validator.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'describe_meta_capabilities',description:'Describe the generic read-only Meta engine: supported resource families, arbitrary field expressions, long jobs and stored-dataset querying. Use when planning an unfamiliar request.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'meta_read',description:'Execute ONE small fresh AI-directed read from Meta. The caller chooses source and fields. Supports accounts, campaigns, adsets, ads, adcreatives, insights, generic Graph objects and object edges. Use for quick questions. For large/full-history requests use start_analysis_job once.',inputSchema:{type:'object',properties:{name:{type:'string'},source:{type:'string',enum:['accounts','campaigns','adsets','ads','adcreatives','insights','objects','edge']},account_ids:{type:'array',items:{type:'string'},maxItems:200},object_ids:{type:'array',items:{type:'string'},maxItems:200},edge:{type:'string'},fields:{type:'array',items:{type:'string'},maxItems:120},level:{type:'string',enum:['account','campaign','adset','ad']},breakdowns:{type:'array',items:{type:'string'},maxItems:8},time_increment:{type:['integer','string']},filtering:{type:'array',items:{type:'object'}},row_limit:{type:'integer',minimum:1,maximum:10000},limit:{type:'integer',minimum:1,maximum:500},time_range:{type:'object',properties:{mode:{type:'string',enum:['preset','custom','maximum']},date_preset:{type:'string'},since:{type:'string'},until:{type:'string'}},additionalProperties:false}},required:['source'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'start_analysis_job',description:'Start ONE logical long-running AI-directed Meta data job from a declarative plan. ChatGPT decides which datasets/fields/granularity are required from the user prompt. The backend only validates/executes read requests, paginates and persists raw datasets. The same logical job checkpoints and resumes across GitHub runs. Do not decompose one large request into many Meta jobs.',inputSchema:{type:'object',properties:{original_request:{type:'string'},account_scope:{type:'object',properties:{mode:{type:'string',enum:['all_accessible','selected']},account_ids:{type:'array',items:{type:'string'},maxItems:200}},additionalProperties:false},time_range:{type:'object',properties:{mode:{type:'string',enum:['preset','custom','maximum']},date_preset:{type:'string'},since:{type:'string'},until:{type:'string'}},additionalProperties:false},datasets:{type:'array',minItems:1,maxItems:40,items:{type:'object',properties:{name:{type:'string'},source:{type:'string',enum:['accounts','campaigns','adsets','ads','adcreatives','insights','objects','edge']},fields:{type:'array',items:{type:'string'},maxItems:120},account_ids:{type:'array',items:{type:'string'},maxItems:200},object_ids:{type:'array',items:{type:'string'}},object_ids_from:{type:'object',properties:{dataset:{type:'string'},field:{type:'string'}},required:['dataset','field'],additionalProperties:false},edge:{type:'string'},level:{type:'string',enum:['account','campaign','adset','ad']},breakdowns:{type:'array',items:{type:'string'},maxItems:8},time_increment:{type:['integer','string']},filtering:{type:'array',items:{type:'object'}},row_limit:{type:'integer',minimum:1,maximum:10000000},page_limit:{type:'integer',minimum:1,maximum:250000},limit:{type:'integer',minimum:1,maximum:500},time_range:{type:'object'}},required:['name','source'],additionalProperties:false}},output:{type:'object',properties:{preview_rows_per_dataset:{type:'integer',minimum:0,maximum:25}},additionalProperties:false}},required:['datasets'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'query_job_data',description:'Read rows from a COMPLETED start_analysis_job dataset already stored in private R2. This does NOT call Meta again. Use it after get_job to inspect only the rows/fields needed for AI reasoning.',inputSchema:{type:'object',properties:{parent_job_id:{type:'string'},dataset:{type:'string'},fields:{type:'array',items:{type:'string'},maxItems:100},filters:{type:'array',maxItems:20,items:{type:'object',properties:{field:{type:'string'},op:{type:'string',enum:['eq','ne','in','contains','gt','gte','lt','lte','exists']},value:{}},required:['field','op'],additionalProperties:false}},limit:{type:'integer',minimum:1,maximum:500},offset:{type:'integer',minimum:0}},required:['parent_job_id','dataset'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'aggregate_job_data',description:'Deterministically aggregate a stored start_analysis_job dataset without re-querying Meta. Supports grouping, sums/averages/counts/count-distinct, raw action_type sums and ratios. ChatGPT supplies the calculation required by its analysis.',inputSchema:{type:'object',properties:{parent_job_id:{type:'string'},dataset:{type:'string'},group_by:{type:'array',items:{type:'string'},maxItems:8},filters:{type:'array',maxItems:20,items:{type:'object'}},metrics:{type:'array',minItems:1,maxItems:30,items:{type:'object',properties:{name:{type:'string'},op:{type:'string',enum:['sum','avg','min','max','count','count_distinct','action_sum','ratio']},field:{type:'string'},action_type:{type:'string'},numerator_metric:{type:'string'},denominator_metric:{type:'string'}},required:['name','op'],additionalProperties:false}},sort_by:{type:'string'},descending:{type:'boolean'},limit:{type:'integer',minimum:1,maximum:500}},required:['parent_job_id','dataset','metrics'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'query_meta',description:'Legacy fresh Meta Insights query. Kept for compatibility; prefer meta_read for new quick AI-directed reads.',inputSchema:{type:'object',properties:{account_ids:{type:'array',items:{type:'string'}},level:{type:'string',enum:['account','campaign','adset','ad']},fields:{type:'array',items:{type:'string'}},breakdowns:{type:'array',items:{type:'string'}},since:{type:'string'},until:{type:'string'},date_preset:{type:'string'},time_increment:{type:['integer','string']},action_type:{type:'string'},row_limit:{type:'integer',minimum:1,maximum:10000},filtering:{type:'array',items:{type:'object'}}},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'inspect_creatives',description:'Legacy creative metadata read. Kept for compatibility; generic ads/adcreatives/object reads can be used instead.',inputSchema:{type:'object',properties:{account_ids:{type:'array',items:{type:'string'}},row_limit:{type:'integer',minimum:1,maximum:500}},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'analyze_data',description:'Legacy deterministic Insights aggregation. Kept for compatibility.',inputSchema:{type:'object',properties:{query:{type:'object'},group_by:{type:'array',items:{type:'string'}},action_type:{type:'string'},min_spend:{type:'number'},sort_by:{type:'string'},top_n:{type:'integer',minimum:1,maximum:100}},required:['query'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'export_report',description:'Legacy direct Meta query export. For generic long jobs, analyze/query the stored dataset after completion.',inputSchema:{type:'object',properties:{query:{type:'object'},format:{type:'string',enum:['csv','xlsx','pdf']},title:{type:'string'}},required:['query','format'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'start_historical_audit',description:'Legacy specialized Lead Generation audit kept for backward compatibility. New open-ended requests should normally use start_analysis_job.',inputSchema:{type:'object',properties:{account_ids:{type:'array',items:{type:'string'},maxItems:100},since:{type:'string'},until:{type:'string'},target_cpl:{type:'number',minimum:0},min_winner_leads:{type:'integer',minimum:3,maximum:10000},min_potential_leads:{type:'integer',minimum:1,maximum:10000},include_daily_consistency:{type:'boolean'}},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'get_job',description:'Poll an asynchronous logical job. For start_analysis_job, queued/running/continuing belong to the SAME logical job ID. On DONE, use query_job_data or aggregate_job_data to reason over its stored datasets without re-querying Meta.',inputSchema:{type:'object',properties:{job_id:{type:'string'}},required:['job_id'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]}
 ];
 async function mcp(req,e){
  if(req.method==='GET')return fail('SSE is not supported; use Streamable HTTP POST',405);
  if(req.method!=='POST')return fail('Method not allowed',405);
- let p;try{p=JSON.parse(await bodyLimit(req));}catch{return fail('Invalid JSON');}
+ let p;try{p=JSON.parse(await bodyLimit(req,100000));}catch{return fail('Invalid JSON');}
  if(Array.isArray(p))return fail('Batch requests not supported');
  const id=p?.id,method=p?.method;
  if(method==='notifications/initialized')return new Response(null,{status:202,headers});
  const answer=(result)=>json({jsonrpc:'2.0',id,result},200,{'mcp-protocol-version':'2025-06-18'});
  const rpcErr=(message,code=-32602)=>json({jsonrpc:'2.0',id,error:{code,message}});
  if(id===undefined)return rpcErr('Request id required',-32600);
- if(method==='initialize')return answer({protocolVersion:'2025-06-18',capabilities:{tools:{}},serverInfo:{name:'el-okaby-ai-analyst',version:'1.1.0'}});
+ if(method==='initialize')return answer({protocolVersion:'2025-06-18',capabilities:{tools:{}},serverInfo:{name:'el-okaby-ai-analyst',version:'2.0.0'}});
  if(method==='ping')return answer({});
  if(method==='tools/list')return answer({tools});
  if(method!=='tools/call')return rpcErr('Method not found',-32601);
@@ -115,7 +120,7 @@ async function mcp(req,e){
    if(!/^[0-9a-f-]{36}$/i.test(a.job_id||''))throw Error('Invalid job id');
    return answer({content:[{type:'text',text:JSON.stringify(await outputJob(e,a.job_id,'owner'))}]});
   }
-  if(name==='discover_accounts'||name==='discover_fields') { if(Object.keys(a).length)throw Error('No arguments expected'); }
+  if(['discover_accounts','discover_fields','describe_meta_capabilities'].includes(name)) { if(Object.keys(a).length)throw Error('No arguments expected'); }
   const input=validJobRequest({mode:name,params:a});
   const out=await scheduleJob(e,'mcp','owner',input);
   return answer({content:[{type:'text',text:JSON.stringify(out)}]});
@@ -318,7 +323,7 @@ async function internalEndpoint(req,e,path){
  const j=await row(d1(e).prepare('SELECT * FROM jobs WHERE id=?'),id);if(!j)return fail('Not found',404);
  if(req.method==='GET'&&path.length===3){
   if(j.status==='done')return fail('Already completed',409);
-  let staleSeconds=1900;try{if(JSON.parse(j.input_json||'{}').mode==='start_historical_audit')staleSeconds=20000;}catch{}
+  let staleSeconds=1900;try{if(['start_historical_audit','start_analysis_job'].includes(JSON.parse(j.input_json||'{}').mode))staleSeconds=20000;}catch{}
   const claim=await run(d1(e).prepare('UPDATE jobs SET status=?,updated_at=? WHERE id=? AND (status IN (?,?) OR (status=? AND updated_at<?))'),'running',now(),id,'queued','dispatch_error','running',now()-staleSeconds);
   if(!claim.meta?.changes)return fail('Job is already running or completed',409);
   let context=[];
@@ -340,6 +345,23 @@ async function internalEndpoint(req,e,path){
    if(!length)return fail('Content-Length is required for bounded checkpoint upload',411);
    if(length>80_000_000)return fail('Checkpoint too large',413);
    if((req.headers.get('content-type')||'')!=='application/gzip')return fail('Checkpoint must be application/gzip',415);
+   await e.REPORTS.put(key,req.body,{httpMetadata:{contentType:'application/gzip'}});
+   return json({ok:true});
+  }
+  return fail('Method not allowed',405);
+ }
+ if(path[3]==='dataset'){
+  if(!e.REPORTS)return fail('R2 binding missing',503);
+  const key='datasets/'+id+'.sqlite3.gz';
+  if(req.method==='GET'){
+   const obj=await e.REPORTS.get(key);if(!obj)return fail('Dataset not found',404);
+   return new Response(obj.body,{headers:{...headers,'content-type':'application/gzip'}});
+  }
+  if(req.method==='POST'){
+   const length=Number(req.headers.get('content-length')||0);
+   if(!length)return fail('Content-Length is required for bounded dataset upload',411);
+   if(length>150_000_000)return fail('Dataset too large',413);
+   if((req.headers.get('content-type')||'')!=='application/gzip')return fail('Dataset must be application/gzip',415);
    await e.REPORTS.put(key,req.body,{httpMetadata:{contentType:'application/gzip'}});
    return json({ok:true});
   }
@@ -427,6 +449,20 @@ export default {
   const expired=await d1(e).prepare('SELECT object_key FROM reports WHERE created_at<? LIMIT 20').bind(cutoff).all();
   for(const r of expired.results||[]){await e.REPORTS.delete(r.object_key);}
   for(const r of expired.results||[])await run(d1(e).prepare('DELETE FROM reports WHERE object_key=?'),r.object_key);
+  if(e.REPORTS){
+   for(const prefix of ['datasets/','checkpoints/']){
+    let cursor=undefined;
+    for(let pageNo=0;pageNo<10;pageNo++){
+     const listed=await e.REPORTS.list({prefix,limit:100,...(cursor?{cursor}:{})});
+     for(const obj of listed.objects||[]){
+      const uploaded=obj.uploaded instanceof Date?obj.uploaded.getTime():new Date(obj.uploaded||0).getTime();
+      if(uploaded && uploaded<cutoff*1000)await e.REPORTS.delete(obj.key);
+     }
+     if(!listed.truncated||!listed.cursor)break;
+     cursor=listed.cursor;
+    }
+   }
+  }
   await d1(e).batch([
    d1(e).prepare('DELETE FROM wa_events WHERE created_at<?').bind(cutoff),
    d1(e).prepare('DELETE FROM oauth_codes WHERE expires<?').bind(now()),
