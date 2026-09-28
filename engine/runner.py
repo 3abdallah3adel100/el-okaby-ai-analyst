@@ -90,12 +90,15 @@ def do_job(job):
   if not parent:raise ValueError('parent_job_id is required')
   value=query_dataset(parent,args) if mode=='query_job_data' else aggregate_dataset(parent,args)
   return value,None,None,False
- heavy = mode in ('start_historical_audit','start_analysis_job')
+ heavy = mode in ('start_historical_audit','start_analysis_job','repair_analysis_job')
  max_calls=_env_int('MAX_META_CALLS_PER_HEAVY_JOB',5000) if heavy else _env_int('MAX_META_CALLS_PER_JOB',120)
  c=MetaClient(parse_tokens(),version=os.getenv('META_GRAPH_VERSION','v26.0'),max_calls=max_calls)
  if mode=='start_analysis_job':
   from .generic_job import run_analysis_job
   return run_analysis_job(job,c)
+ if mode=='repair_analysis_job':
+  from .repair_job import run_repair_job
+  return run_repair_job(job,c)
  if mode=='start_historical_audit':
   from .heavy_audit import run_historical_audit
   return run_historical_audit(job,c)
