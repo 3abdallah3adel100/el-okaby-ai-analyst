@@ -60,6 +60,7 @@ async function outputJob(e,id,actor){
  if(!j || j.actor!==actor)return {error:'Job not found'};
  const out={job_id:id,status:j.status,created_at:j.created_at,updated_at:j.updated_at};
  if(j.status==='done') {try{out.result=JSON.parse(j.result_json||'null');}catch{out.error='Result unavailable';}}
+ else if(j.result_json){try{out.progress=JSON.parse(j.result_json);}catch{}}
  if(j.error && j.status!=='done')out.error=j.error;
  const r=await row(d1(e).prepare('SELECT filename,mime FROM reports WHERE job_id=?'),id);
  if(r && j.status==='done'){
@@ -76,6 +77,7 @@ const tools=[
  {name:'inspect_creatives',description:'Read authorized ad creative metadata and media references; does not claim to interpret full video content.',inputSchema:{type:'object',properties:{account_ids:{type:'array',items:{type:'string'}},row_limit:{type:'integer',minimum:1,maximum:500}},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
  {name:'analyze_data',description:'Run fresh Meta queries then deterministic numeric analysis, grouped by chosen fields and with an explicit action_type when calculating costs. Time comparisons and winners are possible without fixed reports.',inputSchema:{type:'object',properties:{query:{type:'object'},group_by:{type:'array',items:{type:'string'}},action_type:{type:'string'},min_spend:{type:'number'},sort_by:{type:'string'},top_n:{type:'integer',minimum:1,maximum:100}},required:['query'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
  {name:'export_report',description:'Produce a private CSV/XLSX/PDF from an on-demand query; returns a job id then a short-lived download URL from get_job.',inputSchema:{type:'object',properties:{query:{type:'object'},format:{type:'string',enum:['csv','xlsx','pdf']},title:{type:'string'}},required:['query','format'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'start_historical_audit',description:'Start ONE resumable full historical Lead Generation audit across all accessible Meta ad accounts (or selected accounts), including account discovery, lifetime and daily performance, creative metadata, deterministic Winner/Potential/Underperformer classification, scan coverage/errors, and a private XLSX workbook. Use this tool for broad historical audit/report requests instead of decomposing the request into many query_meta/analyze_data calls. The logical audit checkpoints to private R2 and can continue across multiple GitHub runs.',inputSchema:{type:'object',properties:{account_ids:{type:'array',items:{type:'string'},maxItems:100},since:{type:'string'},until:{type:'string'},target_cpl:{type:'number',minimum:0},min_winner_leads:{type:'integer',minimum:3,maximum:10000},min_potential_leads:{type:'integer',minimum:1,maximum:10000},include_daily_consistency:{type:'boolean'}},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
  {name:'get_job',description:'Poll an asynchronous Meta job and return results or a private report download link. Does not re-query cached metrics as current data.',inputSchema:{type:'object',properties:{job_id:{type:'string'}},required:['job_id'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]}
 ];
 async function mcp(req,e){
@@ -88,7 +90,7 @@ async function mcp(req,e){
  const answer=(result)=>json({jsonrpc:'2.0',id,result},200,{'mcp-protocol-version':'2025-06-18'});
  const rpcErr=(message,code=-32602)=>json({jsonrpc:'2.0',id,error:{code,message}});
  if(id===undefined)return rpcErr('Request id required',-32600);
- if(method==='initialize')return answer({protocolVersion:'2025-06-18',capabilities:{tools:{}},serverInfo:{name:'el-okaby-ai-analyst',version:'1.0.0'}});
+ if(method==='initialize')return answer({protocolVersion:'2025-06-18',capabilities:{tools:{}},serverInfo:{name:'el-okaby-ai-analyst',version:'1.1.0'}});
  if(method==='ping')return answer({});
  if(method==='tools/list')return answer({tools});
  if(method!=='tools/call')return rpcErr('Method not found',-32601);
@@ -316,7 +318,8 @@ async function internalEndpoint(req,e,path){
  const j=await row(d1(e).prepare('SELECT * FROM jobs WHERE id=?'),id);if(!j)return fail('Not found',404);
  if(req.method==='GET'&&path.length===3){
   if(j.status==='done')return fail('Already completed',409);
-  const claim=await run(d1(e).prepare('UPDATE jobs SET status=?,updated_at=? WHERE id=? AND (status IN (?,?) OR (status=? AND updated_at<?))'),'running',now(),id,'queued','dispatch_error','running',now()-1900);
+  let staleSeconds=1900;try{if(JSON.parse(j.input_json||'{}').mode==='start_historical_audit')staleSeconds=20000;}catch{}
+  const claim=await run(d1(e).prepare('UPDATE jobs SET status=?,updated_at=? WHERE id=? AND (status IN (?,?) OR (status=? AND updated_at<?))'),'running',now(),id,'queued','dispatch_error','running',now()-staleSeconds);
   if(!claim.meta?.changes)return fail('Job is already running or completed',409);
   let context=[];
   if(j.kind==='whatsapp'){
@@ -325,16 +328,46 @@ async function internalEndpoint(req,e,path){
   }
   return json({job_id:id,kind:j.kind,input:JSON.parse(j.input_json),context});
  }
+ if(path[3]==='checkpoint'){
+  if(!e.REPORTS)return fail('R2 binding missing',503);
+  const key='checkpoints/'+id+'.sqlite3.gz';
+  if(req.method==='GET'){
+   const obj=await e.REPORTS.get(key);if(!obj)return fail('Checkpoint not found',404);
+   return new Response(obj.body,{headers:{...headers,'content-type':'application/gzip'}});
+  }
+  if(req.method==='POST'){
+   const length=Number(req.headers.get('content-length')||0);
+   if(!length)return fail('Content-Length is required for bounded checkpoint upload',411);
+   if(length>80_000_000)return fail('Checkpoint too large',413);
+   if((req.headers.get('content-type')||'')!=='application/gzip')return fail('Checkpoint must be application/gzip',415);
+   await e.REPORTS.put(key,req.body,{httpMetadata:{contentType:'application/gzip'}});
+   return json({ok:true});
+  }
+  return fail('Method not allowed',405);
+ }
+ if(req.method==='POST'&&path[3]==='progress'){
+  let p;try{p=JSON.parse(await bodyLimit(req,20000));}catch{return fail('Bad JSON');}
+  const progress=JSON.stringify(p||{});if(progress.length>18000)return fail('Progress payload too large',413);
+  await run(d1(e).prepare("UPDATE jobs SET result_json=?,updated_at=? WHERE id=? AND status IN ('running','queued','continuing')"),progress,now(),id);
+  return json({ok:true});
+ }
+ if(req.method==='POST'&&path[3]==='continue'){
+  const moved=await run(d1(e).prepare("UPDATE jobs SET status='continuing',updated_at=? WHERE id=? AND status='running'"),now(),id);
+  if(!moved.meta?.changes)return fail('Job is not in a continuable state',409);
+  try{await dispatchJob(e,id);return json({ok:true,status:'queued'});}catch(ex){return fail('Continuation dispatch failed',503);}
+ }
  if(req.method==='POST'&&path[3]==='report'){
   if(!e.REPORTS)return fail('R2 binding missing',503);
   const mime=req.headers.get('content-type')||'application/octet-stream';
   const ext=({'text/csv':'csv','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'xlsx','application/pdf':'pdf'})[mime];
-  const length=Number(req.headers.get('content-length')||0);if(!ext||length>8_000_000)return fail('Invalid report format or size',413);
+  const length=Number(req.headers.get('content-length')||0);if(!ext||length>80_000_000)return fail('Invalid report format or size',413);
   // Stream binary bytes to R2: Cloudflare does not parse or analyze the report.
   if(!length)return fail('Content-Length is required for bounded upload',411);
   const key='reports/'+id+'.'+ext;
+  let filename=`el_okaby_${id}.${ext}`;
+  try{const input=JSON.parse(j.input_json||'{}');if(input.mode==='start_historical_audit'&&ext==='xlsx')filename='El_Okaby_Historical_LeadGen_Winners_Analysis.xlsx';}catch{}
   await e.REPORTS.put(key,req.body,{httpMetadata:{contentType:mime}});
-  await run(d1(e).prepare('INSERT OR REPLACE INTO reports(job_id,object_key,mime,filename,created_at) VALUES(?,?,?,?,?)'),id,key,mime,`el_okaby_${id}.${ext}`,now());
+  await run(d1(e).prepare('INSERT OR REPLACE INTO reports(job_id,object_key,mime,filename,created_at) VALUES(?,?,?,?,?)'),id,key,mime,filename,now());
   return json({ok:true});
  }
  if(req.method==='GET'&&path[3]==='link'){
@@ -349,6 +382,7 @@ async function internalEndpoint(req,e,path){
   const result=ok?JSON.stringify(p.result||{}):null;
   if(result && result.length>170000)return fail('Result too large: use report upload',413);
   await run(d1(e).prepare('UPDATE jobs SET status=?,result_json=?,error=?,updated_at=? WHERE id=? AND status!=?'),ok?'done':'failed',result,ok?null:String(p.error||'Job failed').slice(0,300),now(),id,'done');
+  if(ok&&e.REPORTS){try{await e.REPORTS.delete('checkpoints/'+id+'.sqlite3.gz');}catch{}}
   return json({ok:true});
  }
  return fail('Not found',404);
