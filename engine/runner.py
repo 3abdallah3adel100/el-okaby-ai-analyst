@@ -1,7 +1,11 @@
 """GitHub job runner for El Okaby AI Analyst.
 
-Normal MCP tools remain short, bounded jobs. `start_historical_audit` is one logical,
-resumable heavy job that checkpoints to private R2 and can span multiple GitHub runs.
+v2 adds an AI-directed generic read engine:
+- meta_read: small fresh arbitrary read request
+- start_analysis_job: one logical, checkpointed, declarative multi-dataset Meta job
+- query_job_data / aggregate_job_data: read stored results without re-querying Meta
+
+Legacy dynamic tools and start_historical_audit remain available for compatibility.
 """
 from __future__ import annotations
 import argparse
@@ -20,7 +24,7 @@ from .whatsapp import send_text
 def gateway(path,method='GET',data=None,mime='application/json'):
  url=os.environ['GATEWAY_BASE_URL'].rstrip('/')+path
  payload=data if isinstance(data,bytes) else json.dumps(data,ensure_ascii=False).encode('utf-8') if data is not None else None
- req=urllib.request.Request(url,data=payload,method=method,headers={'Authorization':'Bearer '+os.environ['JOB_SHARED_SECRET'],'Content-Type':mime,'User-Agent':'ElOkabyJob/1.1'})
+ req=urllib.request.Request(url,data=payload,method=method,headers={'Authorization':'Bearer '+os.environ['JOB_SHARED_SECRET'],'Content-Type':mime,'User-Agent':'ElOkabyJob/2.0'})
  try:
   with urllib.request.urlopen(req,timeout=120) as r:
    raw=r.read(200_000)
@@ -42,14 +46,14 @@ def creative_metadata(client,params):
   cursor=None
   for _ in range(5):
    if len(out)>=lim:break
-   q={'fields':'id,name,creative{id,name,thumbnail_url,image_url,object_story_spec,asset_feed_spec}', 'limit':min(100,lim-len(out))}
+   q={'fields':'id,name,creative{id,name,thumbnail_url,image_url,object_story_id,effective_object_story_id,object_story_spec,asset_feed_spec}', 'limit':min(100,lim-len(out))}
    if cursor:q['after']=cursor
    try:r,_=client.request('/act_'+aid+'/ads',found['token_alias'],q)
    except Exception as ex:errors.append({'account_id':aid,'error':str(ex)});break
    out.extend(r.get('data',[]));nxt=r.get('paging',{}).get('cursors',{}).get('after')
    if not nxt or nxt==cursor:break
    cursor=nxt
- return {'creatives':out,'errors':errors,'limited':len(out)>=lim,'note':'Metadata and thumbnails only; actual video/image interpretation requires additional media retrieval and user-authorized vision processing.'}
+ return {'creatives':out,'errors':errors,'limited':len(out)>=lim,'note':'Metadata and references only; actual video/image interpretation requires media retrieval and vision processing.'}
 
 
 def do_tool(name,args,client):
@@ -63,6 +67,12 @@ def do_tool(name,args,client):
   result=client.insights(args.get('query') or {})
   fmt=args.get('format','xlsx');out,mime=make_report(result,fmt,args.get('title','El Okaby AI Analyst'))
   return {'meta':{'row_count':result['row_count'],'complete':result['complete'],'account_errors':result['account_errors'],'live_at_utc':result['live_at_utc']},'report_bytes':out,'report_mime':mime}
+ if name=='describe_meta_capabilities':
+  from .generic_meta import CAPABILITIES
+  return CAPABILITIES
+ if name=='meta_read':
+  from .generic_meta import quick_read
+  return quick_read(client,args)
  raise ValueError('Unknown tool mode')
 
 
@@ -70,12 +80,23 @@ def _env_int(name,default):
  try:return int(os.getenv(name) or default)
  except (TypeError,ValueError):return int(default)
 
+
 def do_job(job):
  data=job['input'];mode=data.get('mode');args=data.get('params') or {}
- heavy = mode=='start_historical_audit'
+ # Stored-dataset operations deliberately do not require or call Meta.
+ if mode in ('query_job_data','aggregate_job_data'):
+  from .dataset_tools import query_dataset,aggregate_dataset
+  parent=str(args.get('parent_job_id') or '')
+  if not parent:raise ValueError('parent_job_id is required')
+  value=query_dataset(parent,args) if mode=='query_job_data' else aggregate_dataset(parent,args)
+  return value,None,None,False
+ heavy = mode in ('start_historical_audit','start_analysis_job')
  max_calls=_env_int('MAX_META_CALLS_PER_HEAVY_JOB',5000) if heavy else _env_int('MAX_META_CALLS_PER_JOB',120)
  c=MetaClient(parse_tokens(),version=os.getenv('META_GRAPH_VERSION','v26.0'),max_calls=max_calls)
- if heavy:
+ if mode=='start_analysis_job':
+  from .generic_job import run_analysis_job
+  return run_analysis_job(job,c)
+ if mode=='start_historical_audit':
   from .heavy_audit import run_historical_audit
   return run_historical_audit(job,c)
  if mode=='whatsapp_agent':
@@ -120,7 +141,7 @@ def main():
   info=gateway('/internal/jobs/'+job_id)
   result,report,mime,continued=do_job(info)
   if continued:
-   print('Heavy audit checkpoint saved; continuation queued. Private payload omitted.')
+   print('Checkpoint saved; continuation queued for same logical job ID. Private payload omitted.')
    return
   if report is not None:gateway('/internal/jobs/'+job_id+'/report','POST',report,mime)
   gateway('/internal/jobs/'+job_id+'/complete','POST',{'result':result})

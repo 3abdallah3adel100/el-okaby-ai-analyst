@@ -27,9 +27,14 @@ export function isAllowedRedirect(uri, allowedCsv) {
 export function validJobRequest(a) {
   if (!a || typeof a !== 'object' || Array.isArray(a)) throw new Error('Arguments must be a JSON object');
   const mode = String(a.mode || 'query_meta');
-  if (!['discover_accounts','discover_fields','query_meta','analyze_data','export_report','inspect_creatives','start_historical_audit'].includes(mode)) throw new Error('Unsupported request mode');
+  const allowed = [
+    'discover_accounts','discover_fields','query_meta','analyze_data','export_report','inspect_creatives','start_historical_audit',
+    'describe_meta_capabilities','meta_read','start_analysis_job','query_job_data','aggregate_job_data'
+  ];
+  if (!allowed.includes(mode)) throw new Error('Unsupported request mode');
   const p = a.params || {};
-  if (typeof p !== 'object' || !p || Array.isArray(p) || JSON.stringify(p).length > 13000) throw new Error('Invalid parameters');
+  const max = mode === 'start_analysis_job' ? 60000 : 18000;
+  if (typeof p !== 'object' || !p || Array.isArray(p) || JSON.stringify(p).length > max) throw new Error('Invalid parameters');
   return { mode, params: p };
 }
 export const safeText = s => String(s || '').replace(/[<>&"']/g, x => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[x]));
