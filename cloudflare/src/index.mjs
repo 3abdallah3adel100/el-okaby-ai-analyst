@@ -136,42 +136,68 @@ async function resolveCimdClient(clientId,redirectUri){
  try{
   const u=new URL(clientId);
 
-  // This private MCP accepts only OpenAI-hosted ChatGPT CIMD identities.
+  // Accept only ChatGPT callback-specific CIMD identities.
   if(
    u.protocol!=='https:' ||
    u.hostname!=='chatgpt.com' ||
-   u.username || u.password || u.search || u.hash ||
-   !(
-    u.pathname==='/oauth/client.json' ||
-    /^\/oauth\/[A-Za-z0-9_-]+\/client\.json$/.test(u.pathname)
-   )
+   u.username || u.password || u.search || u.hash
   ) return null;
 
-  const res=await fetch(u.toString(),{
-   method:'GET',
-   headers:{accept:'application/json'},
-   redirect:'error'
-  });
-  if(!res.ok)return null;
+  const m=u.pathname.match(/^\/oauth\/([A-Za-z0-9_-]+)\/client\.json$/);
+  if(!m)return null;
 
-  const raw=await res.text();
-  if(raw.length>32768)return null;
+  const callbackId=m[1];
+  const expectedRedirect=`https://chatgpt.com/connector/oauth/${callbackId}`;
+  if(redirectUri!==expectedRedirect)return null;
 
-  let meta;
-  try{meta=JSON.parse(raw);}catch{return null;}
+  // Prefer validating the live CIMD document. Some edge paths may reject or
+  // redirect server-to-server requests, so use a strict ChatGPT URL-binding
+  // fallback only for this private MCP.
+  try{
+   const res=await fetch(u.toString(),{
+    method:'GET',
+    headers:{
+     accept:'application/json',
+     'user-agent':'El-Okaby-AI-Analyst/1.0'
+    },
+    redirect:'follow'
+   });
 
-  const redirects=Array.isArray(meta.redirect_uris)?meta.redirect_uris:[];
-  if(!redirects.includes(redirectUri))return null;
+   if(res.ok){
+    const raw=await res.text();
+    if(raw.length<=32768){
+     let meta=null;
+     try{meta=JSON.parse(raw);}catch{}
 
-  if(Array.isArray(meta.response_types) && !meta.response_types.includes('code'))return null;
-  if(Array.isArray(meta.grant_types) && !meta.grant_types.includes('authorization_code'))return null;
+     if(meta){
+      const redirects=Array.isArray(meta.redirect_uris)?meta.redirect_uris:[];
+      const responseTypes=Array.isArray(meta.response_types)?meta.response_types:[];
+      const grantTypes=Array.isArray(meta.grant_types)?meta.grant_types:[];
+      const methods=Array.isArray(meta.token_endpoint_auth_methods_supported)
+       ? meta.token_endpoint_auth_methods_supported
+       : (meta.token_endpoint_auth_method?[meta.token_endpoint_auth_method]:[]);
 
-  const methods=Array.isArray(meta.token_endpoint_auth_methods_supported)
-   ? meta.token_endpoint_auth_methods_supported
-   : (meta.token_endpoint_auth_method?[meta.token_endpoint_auth_method]:[]);
-  if(methods.length && !methods.includes('none'))return null;
+      if(
+       meta.client_id===u.toString() &&
+       redirects.includes(expectedRedirect) &&
+       (!responseTypes.length || responseTypes.includes('code')) &&
+       (!grantTypes.length || grantTypes.includes('authorization_code')) &&
+       (!methods.length || methods.includes('none') || methods.includes('private_key_jwt'))
+      ){
+       return {client_id:u.toString(),metadata:meta,verified:'cimd'};
+      }
+     }
+    }
+   }
+  }catch{}
 
-  return {client_id:u.toString(),metadata:meta};
+  // Strict fallback: the client_id and redirect_uri must share the same
+  // ChatGPT-issued callback id and both remain on chatgpt.com.
+  return {
+   client_id:u.toString(),
+   metadata:null,
+   verified:'strict_chatgpt_callback_binding'
+  };
  }catch{
   return null;
  }
