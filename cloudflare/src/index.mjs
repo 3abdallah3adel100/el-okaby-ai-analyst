@@ -1,4 +1,4 @@
-import {json,err,uuid,randomToken,sha256,timingEqual,hmacVerify,isAllowedRedirect,validJobRequest,safeText} from './utils.mjs';
+import {json,err,uuid,randomToken,sha256,timingEqual,hmacVerify,validJobRequest,safeText} from './utils.mjs';
 const now=()=>Math.floor(Date.now()/1000);
 const headers={ 'cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer' };
 const base=e=>String(e.PUBLIC_BASE_URL||'').replace(/\/$/,'');
@@ -10,6 +10,22 @@ const run=async(q,...args)=>q.bind(...args).run();
 const bodyLimit=async(req,size=32768)=>{const s=await req.text();if(s.length>size)throw Error('Request too large');return s;};
 const fail=(msg,status=400)=>err(msg,status);
 const authChallenge=e=>json({error:'unauthorized'},401,{'www-authenticate':`Bearer resource_metadata="${base(e)}/.well-known/oauth-protected-resource/mcp"`});
+
+function oauthRedirectAllowed(uri,allowedCsv=''){
+ if(!uri)return false;
+ try{
+  const u=new URL(uri);
+  if(u.protocol!=='https:'||u.hash)return false;
+  if(
+   u.origin==='https://chatgpt.com' &&
+   !u.search &&
+   /^\/connector\/oauth\/[A-Za-z0-9_-]+$/.test(u.pathname)
+  ) return true;
+  return String(allowedCsv||'').split(',').map(x=>x.trim()).filter(Boolean).includes(uri);
+ }catch{
+  return false;
+ }
+}
 
 async function bearer(req,e,scope='elokaby:read') {
  const v=req.headers.get('authorization')||'';
@@ -92,14 +108,14 @@ async function mcp(req,e){
 }
 
 function metadata(e){return json({resource:resource(e),authorization_servers:[authServer(e)],scopes_supported:['elokaby:read'],bearer_methods_supported:['header']});}
-function oauthMetadata(e){return json({issuer:authServer(e),authorization_endpoint:base(e)+'/authorize',token_endpoint:base(e)+'/token',registration_endpoint:base(e)+'/register',response_types_supported:['code'],grant_types_supported:['authorization_code','refresh_token'],token_endpoint_auth_methods_supported:['none'],code_challenge_methods_supported:['S256'],scopes_supported:['elokaby:read'],authorization_response_iss_parameter_supported:true});}
+function oauthMetadata(e){return json({issuer:authServer(e),authorization_endpoint:base(e)+'/authorize',token_endpoint:base(e)+'/token',registration_endpoint:base(e)+'/register',response_types_supported:['code'],grant_types_supported:['authorization_code','refresh_token'],token_endpoint_auth_methods_supported:['none'],code_challenge_methods_supported:['S256'],scopes_supported:['elokaby:read']});}
 async function register(req,e){
  if(req.method!=='POST')return fail('Method not allowed',405);
  const ip=await sha256(req.headers.get('cf-connecting-ip')||'unknown');
  const attempts=await row(d1(e).prepare('SELECT COUNT(*) AS n FROM registration_attempts WHERE ip_hash=? AND created_at>?'),ip,now()-3600);
  if((attempts?.n||0)>=10)return fail('Registration rate limit exceeded',429);
  let p;try{p=JSON.parse(await bodyLimit(req,8192));}catch{return fail('Invalid JSON');}
- if(!Array.isArray(p.redirect_uris)||!p.redirect_uris.length||p.redirect_uris.length>5||!p.redirect_uris.every(u=>isAllowedRedirect(u,e.OAUTH_ALLOWED_REDIRECT_URIS)))return fail('Redirect URI not allowed');
+ if(!Array.isArray(p.redirect_uris)||!p.redirect_uris.length||p.redirect_uris.length>5||!p.redirect_uris.every(u=>oauthRedirectAllowed(u,e.OAUTH_ALLOWED_REDIRECT_URIS)))return fail('Redirect URI not allowed');
  if(p.token_endpoint_auth_method && p.token_endpoint_auth_method!=='none')return fail('Only public clients with PKCE supported');
  const id=randomToken(24),created=now();
  await run(d1(e).prepare('INSERT INTO registration_attempts(ip_hash,created_at) VALUES(?,?)'),ip,created);
@@ -111,7 +127,7 @@ async function authorize(req,e){
   const p=new URL(req.url).searchParams,client=p.get('client_id')||'',redirect=p.get('redirect_uri')||'',resourceParam=p.get('resource')||'',challenge=p.get('code_challenge')||'';
   const clientRow=await row(d1(e).prepare('SELECT redirect_uris FROM oauth_clients WHERE client_id=?'),client);
   const approved=clientRow?JSON.parse(clientRow.redirect_uris):[];
-  if(!approved.includes(redirect)||!isAllowedRedirect(redirect,e.OAUTH_ALLOWED_REDIRECT_URIS)||resourceParam!==resource(e)||p.get('response_type')!=='code'||p.get('code_challenge_method')!=='S256'||!/^[a-zA-Z0-9_-]{43,128}$/.test(challenge)||!(p.get('scope')||'').split(' ').includes('elokaby:read'))return fail('Invalid OAuth authorization request');
+  if(!approved.includes(redirect)||!oauthRedirectAllowed(redirect,e.OAUTH_ALLOWED_REDIRECT_URIS)||resourceParam!==resource(e)||p.get('response_type')!=='code'||p.get('code_challenge_method')!=='S256'||!/^[a-zA-Z0-9_-]{43,128}$/.test(challenge)||!(p.get('scope')||'').split(' ').includes('elokaby:read'))return fail('Invalid OAuth authorization request');
   const nonce=randomToken(20),ip=await sha256(req.headers.get('cf-connecting-ip')||'unknown');
   await run(d1(e).prepare('INSERT INTO oauth_intents(id,client_id,redirect_uri,code_challenge,state,scope,resource,ip_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?)'),nonce,client,redirect,challenge,p.get('state')||'','elokaby:read',resourceParam,ip,now());
   return new Response(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>El Okaby authorization</title></head><body><main><h2>El Okaby AI Analyst</h2><p>Authorize read-only access to ad analytics for the connected client.</p><form method="post" action="/authorize"><input type="hidden" name="intent" value="${safeText(nonce)}"><label>Owner password <input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Authorize</button></form></main></body></html>`,{status:200,headers:{...headers,'content-type':'text/html; charset=utf-8','content-security-policy':"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"}});
@@ -130,7 +146,7 @@ async function authorize(req,e){
  if(!consumed.meta?.changes)return fail('Authorization already used');
  const code=randomToken(32);
  await run(d1(e).prepare('INSERT INTO oauth_codes(hash,client_id,redirect_uri,code_challenge,scope,resource,expires) VALUES(?,?,?,?,?,?,?)'),await sha256(code),o.client_id,o.redirect_uri,o.code_challenge,o.scope,o.resource,now()+300);
- const dest=new URL(o.redirect_uri);dest.searchParams.set('code',code);dest.searchParams.set('state',o.state);dest.searchParams.set('iss',authServer(e));
+ const dest=new URL(o.redirect_uri);dest.searchParams.set('code',code);dest.searchParams.set('state',o.state);
  return new Response(null,{status:302,headers:{...headers,location:dest.toString()}});
 }
 async function issue(e,clientId,scope,resourceId){
