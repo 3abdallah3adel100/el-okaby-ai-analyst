@@ -85,6 +85,7 @@ const tools=[
  {name:'start_historical_audit',description:'Legacy specialized Lead Generation audit kept for backward compatibility. New open-ended requests should normally use start_analysis_job.',inputSchema:{type:'object',properties:{account_ids:{type:'array',items:{type:'string'},maxItems:100},since:{type:'string'},until:{type:'string'},target_cpl:{type:'number',minimum:0},min_winner_leads:{type:'integer',minimum:3,maximum:10000},min_potential_leads:{type:'integer',minimum:1,maximum:10000},include_daily_consistency:{type:'boolean'}},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
  {name:'get_job',description:'Poll an asynchronous logical job. For start_analysis_job, queued/running/continuing belong to the SAME logical job ID. On DONE, use query_job_data or aggregate_job_data to reason over its stored datasets without re-querying Meta.',inputSchema:{type:'object',properties:{job_id:{type:'string'}},required:['job_id'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]}
 ];
+
 async function mcp(req,e){
  if(req.method==='GET')return fail('SSE is not supported; use Streamable HTTP POST',405);
  if(req.method!=='POST')return fail('Method not allowed',405);
@@ -95,7 +96,7 @@ async function mcp(req,e){
  const answer=(result)=>json({jsonrpc:'2.0',id,result},200,{'mcp-protocol-version':'2025-06-18'});
  const rpcErr=(message,code=-32602)=>json({jsonrpc:'2.0',id,error:{code,message}});
  if(id===undefined)return rpcErr('Request id required',-32600);
- if(method==='initialize')return answer({protocolVersion:'2025-06-18',capabilities:{tools:{}},serverInfo:{name:'el-okaby-ai-analyst',version:'2.0.0'}});
+ if(method==='initialize')return answer({protocolVersion:'2025-06-18',capabilities:{tools:{}},serverInfo:{name:'el-okaby-ai-analyst',version:'2.0.1'}});
  if(method==='ping')return answer({});
  if(method==='tools/list')return answer({tools});
  if(method!=='tools/call')return rpcErr('Method not found',-32601);
@@ -120,7 +121,51 @@ async function mcp(req,e){
    if(!/^[0-9a-f-]{36}$/i.test(a.job_id||''))throw Error('Invalid job id');
    return answer({content:[{type:'text',text:JSON.stringify(await outputJob(e,a.job_id,'owner'))}]});
   }
-  if(['discover_accounts','discover_fields','describe_meta_capabilities'].includes(name)) { if(Object.keys(a).length)throw Error('No arguments expected'); }
+
+  if(['discover_accounts','discover_fields','describe_meta_capabilities'].includes(name)) {
+   if(Object.keys(a).length)throw Error('No arguments expected');
+  }
+
+  // Static capability metadata is served immediately from Cloudflare.
+  // It must NOT create a D1 job or dispatch a GitHub Action.
+  if(name==='describe_meta_capabilities'){
+   const capabilities={
+    design:'AI-directed read-only Meta data engine. ChatGPT chooses resources, fields, dates, levels and breakdowns; the backend validates and executes read-only requests.',
+    execution_model:{
+     describe_meta_capabilities:'instant Cloudflare response; no GitHub job',
+     meta_read:'fresh Meta read via a small job',
+     start_analysis_job:'long-running logical job with checkpoint/resume on the same job_id',
+     get_job:'direct job-status read',
+     query_job_data:'reads a persisted job dataset; no new Meta extraction',
+     aggregate_job_data:'aggregates a persisted job dataset; no new Meta extraction'
+    },
+    sources:['accounts','campaigns','adsets','ads','adcreatives','insights','objects','edge'],
+    account_collections:['campaigns','adsets','ads','adcreatives'],
+    insights_levels:['account','campaign','adset','ad'],
+    supports:[
+     'automatic all-token account discovery',
+     'arbitrary safe Meta field expressions including nested Graph fields',
+     'campaign/adset/ad/adcreative collection reads',
+     'Meta Insights with caller-selected metrics and breakdowns',
+     'generic Graph object reads for discovered object IDs when token permissions allow',
+     'generic read-only object edges',
+     'pagination',
+     'preset/custom/maximum historical time ranges',
+     'raw actions, action_values and cost_per_action_type',
+     'long-running checkpointed analysis jobs',
+     'stored dataset querying and deterministic aggregation after extraction'
+    ],
+    safety:[
+     'read-only analytics engine',
+     'no create/update/delete ad operations are exposed',
+     'Meta remains the final validator for field/breakdown compatibility',
+     'missing or unavailable fields are never fabricated'
+    ],
+    version:'2.0.1'
+   };
+   return answer({content:[{type:'text',text:JSON.stringify(capabilities)}]});
+  }
+
   const input=validJobRequest({mode:name,params:a});
   const out=await scheduleJob(e,'mcp','owner',input);
   return answer({content:[{type:'text',text:JSON.stringify(out)}]});
@@ -155,8 +200,6 @@ async function register(req,e){
 async function resolveCimdClient(clientId,redirectUri){
  try{
   const u=new URL(clientId);
-
-  // Accept only ChatGPT callback-specific CIMD identities.
   if(
    u.protocol!=='https:' ||
    u.hostname!=='chatgpt.com' ||
@@ -170,16 +213,10 @@ async function resolveCimdClient(clientId,redirectUri){
   const expectedRedirect=`https://chatgpt.com/connector/oauth/${callbackId}`;
   if(redirectUri!==expectedRedirect)return null;
 
-  // Prefer validating the live CIMD document. Some edge paths may reject or
-  // redirect server-to-server requests, so use a strict ChatGPT URL-binding
-  // fallback only for this private MCP.
   try{
    const res=await fetch(u.toString(),{
     method:'GET',
-    headers:{
-     accept:'application/json',
-     'user-agent':'El-Okaby-AI-Analyst/1.0'
-    },
+    headers:{accept:'application/json','user-agent':'El-Okaby-AI-Analyst/1.0'},
     redirect:'follow'
    });
 
@@ -188,7 +225,6 @@ async function resolveCimdClient(clientId,redirectUri){
     if(raw.length<=32768){
      let meta=null;
      try{meta=JSON.parse(raw);}catch{}
-
      if(meta){
       const redirects=Array.isArray(meta.redirect_uris)?meta.redirect_uris:[];
       const responseTypes=Array.isArray(meta.response_types)?meta.response_types:[];
@@ -211,8 +247,6 @@ async function resolveCimdClient(clientId,redirectUri){
    }
   }catch{}
 
-  // Strict fallback: the client_id and redirect_uri must share the same
-  // ChatGPT-issued callback id and both remain on chatgpt.com.
   return {
    client_id:u.toString(),
    metadata:null,
@@ -383,7 +417,6 @@ async function internalEndpoint(req,e,path){
   const mime=req.headers.get('content-type')||'application/octet-stream';
   const ext=({'text/csv':'csv','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'xlsx','application/pdf':'pdf'})[mime];
   const length=Number(req.headers.get('content-length')||0);if(!ext||length>80_000_000)return fail('Invalid report format or size',413);
-  // Stream binary bytes to R2: Cloudflare does not parse or analyze the report.
   if(!length)return fail('Content-Length is required for bounded upload',411);
   const key='reports/'+id+'.'+ext;
   let filename=`el_okaby_${id}.${ext}`;
