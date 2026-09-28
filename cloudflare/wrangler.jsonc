@@ -5,8 +5,8 @@
   "triggers": { "crons": ["0 5 * * *"] },
   "workers_dev": true,
   "vars": {
-    "GITHUB_OWNER": "SET_GITHUB_OWNER",
-    "GITHUB_REPO": "SET_NEW_REPO",
+   "GITHUB_OWNER": "3abdallah3adel100",
+   "GITHUB_REPO": "el-okaby-ai-analyst",
     "ALLOWED_WA_NUMBERS": "",
     "OAUTH_ALLOWED_REDIRECT_URIS": "",
     "PUBLIC_BASE_URL": "https://REPLACE_WITH_WORKER.workers.dev",
