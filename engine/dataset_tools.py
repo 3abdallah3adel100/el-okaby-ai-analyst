@@ -142,6 +142,136 @@ def _manifest(db: sqlite3.Connection) -> list[dict]:
     return out
 
 
+
+def _account_name_map(db: sqlite3.Connection) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        for rec in db.execute("SELECT data_json FROM dataset_rows WHERE dataset='accounts' ORDER BY row_index"):
+            try:
+                row = json.loads(rec[0])
+            except Exception:
+                continue
+            aid = str(row.get("account_id") or row.get("id") or "").replace("act_", "")
+            if not aid:
+                continue
+            out[aid] = str(row.get("name") or row.get("account_name") or "")
+    except sqlite3.Error:
+        pass
+    return out
+
+
+def _parse_scope(scope_id: str) -> tuple[str, str | None, str | None]:
+    raw = str(scope_id or "")
+    parts = raw.split(":")
+    if len(parts) >= 3 and parts[0].isdigit():
+        return parts[0], parts[1] or None, parts[2] or None
+    if len(parts) >= 1 and parts[0].isdigit():
+        return parts[0], None, None
+    return "", None, None
+
+
+def _diagnostic_error_rows(db: sqlite3.Connection) -> list[dict]:
+    names = _account_name_map(db)
+    out: list[dict] = []
+    for rec in db.execute(
+        "SELECT id,dataset,scope_id,error,created_at FROM errors ORDER BY dataset,id"
+    ):
+        aid, date_since, date_until = _parse_scope(rec["scope_id"])
+        out.append(
+            {
+                "id": int(rec["id"]),
+                "dataset": rec["dataset"],
+                "scope_id": rec["scope_id"],
+                "account_id": aid or None,
+                "account_name": names.get(aid) if aid else None,
+                "date_since": date_since,
+                "date_until": date_until,
+                "error": rec["error"],
+                "created_at": rec["created_at"],
+            }
+        )
+    return out
+
+
+def _diagnostic_coverage_rows(db: sqlite3.Connection) -> list[dict]:
+    names = _account_name_map(db)
+    err_counts: dict[tuple[str, str], int] = defaultdict(int)
+    try:
+        for rec in db.execute("SELECT dataset,scope_id,COUNT(*) AS n FROM errors GROUP BY dataset,scope_id"):
+            err_counts[(str(rec["dataset"] or ""), str(rec["scope_id"] or ""))] = int(rec["n"] or 0)
+    except sqlite3.Error:
+        pass
+    out: list[dict] = []
+    for rec in db.execute(
+        "SELECT dataset,scope_id,cursor,status,updated_at FROM progress ORDER BY dataset,scope_id"
+    ):
+        aid, date_since, date_until = _parse_scope(rec["scope_id"])
+        out.append(
+            {
+                "dataset": rec["dataset"],
+                "scope_id": rec["scope_id"],
+                "account_id": aid or None,
+                "account_name": names.get(aid) if aid else None,
+                "date_since": date_since,
+                "date_until": date_until,
+                "status": rec["status"],
+                "cursor_present": bool(rec["cursor"]),
+                "error_count": err_counts.get((str(rec["dataset"] or ""), str(rec["scope_id"] or "")), 0),
+                "updated_at": rec["updated_at"],
+            }
+        )
+    return out
+
+
+def _apply_virtual_query(rows: list[dict], params: dict, dataset: str) -> dict:
+    fields = params.get("fields") or []
+    filters = params.get("filters") or []
+    if not isinstance(fields, list) or len(fields) > 100:
+        raise ValueError("Invalid fields")
+    if not isinstance(filters, list) or len(filters) > 20:
+        raise ValueError("Invalid filters")
+    limit = max(1, min(500, int(params.get("limit") or 100)))
+    offset = max(0, int(params.get("offset") or 0))
+    matched = [r for r in rows if _matches(r, filters)]
+    page = matched[offset: offset + limit]
+    if fields:
+        page = [{f: _get_path(r, f) for f in fields} for r in page]
+    result = {
+        "dataset": dataset,
+        "rows": page,
+        "returned": len(page),
+        "offset": offset,
+        "dataset_row_count": len(rows),
+        "matched_row_count": len(matched),
+        "storage": "diagnostics read from persisted parent-job SQLite metadata; no Meta API call",
+    }
+    if dataset == "__errors__":
+        by_dataset: dict[str, int] = defaultdict(int)
+        by_account: dict[str, int] = defaultdict(int)
+        for r in rows:
+            by_dataset[str(r.get("dataset") or "")] += 1
+            if r.get("account_id"):
+                by_account[str(r["account_id"])] += 1
+        result["summary"] = {
+            "total_errors": len(rows),
+            "by_dataset": dict(sorted(by_dataset.items())),
+            "accounts_with_errors": len(by_account),
+        }
+    elif dataset == "__coverage__":
+        status_counts: dict[str, int] = defaultdict(int)
+        failed_by_dataset: dict[str, int] = defaultdict(int)
+        for r in rows:
+            st = str(r.get("status") or "")
+            status_counts[st] += 1
+            if st == "failed":
+                failed_by_dataset[str(r.get("dataset") or "")] += 1
+        result["summary"] = {
+            "scope_count": len(rows),
+            "status_counts": dict(sorted(status_counts.items())),
+            "failed_scopes_by_dataset": dict(sorted(failed_by_dataset.items())),
+        }
+    return result
+
 def query_dataset(parent_job_id: str, params: dict) -> dict:
     path = _load_parent(parent_job_id)
     db = None
@@ -151,6 +281,16 @@ def query_dataset(parent_job_id: str, params: dict) -> dict:
         dataset = str(params.get("dataset") or "")
         if not dataset:
             raise ValueError("dataset is required")
+        if dataset == "__errors__":
+            out = _apply_virtual_query(_diagnostic_error_rows(db), params, dataset)
+            out["parent_job_id"] = parent_job_id
+            out["manifest"] = _manifest(db)
+            return out
+        if dataset == "__coverage__":
+            out = _apply_virtual_query(_diagnostic_coverage_rows(db), params, dataset)
+            out["parent_job_id"] = parent_job_id
+            out["manifest"] = _manifest(db)
+            return out
         fields = params.get("fields") or []
         filters = params.get("filters") or []
         if not isinstance(fields, list) or len(fields) > 100:
