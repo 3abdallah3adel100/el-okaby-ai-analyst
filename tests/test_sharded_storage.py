@@ -116,6 +116,46 @@ class ShardedStorageTests(unittest.TestCase):
         finally:
             shutil.rmtree(td, ignore_errors=True)
 
+    def test_virtual_error_and_coverage_diagnostics(self):
+        td = tempfile.mkdtemp()
+        try:
+            meta_path = os.path.join(td, "parent.sqlite3")
+            db = GenericDB(meta_path)
+            account_spec = {
+                "name": "accounts", "source": "accounts", "fields": ["id", "name"],
+                "account_ids": [], "row_limit": 1000, "page_limit": 10,
+                "time_range": {"mode": "maximum", "date_preset": "maximum"},
+                "breakdowns": [], "level": "account", "time_increment": None,
+                "filtering": [], "limit": 100,
+            }
+            daily_spec = self._spec()
+            db.ensure_dataset(account_spec)
+            db.ensure_dataset(daily_spec)
+            db.insert_rows("accounts", [{"id": "act_123", "account_id": "123", "name": "AA Test"}])
+            db.set_progress("ad_daily", "123:2026-01-01:2026-03-31", None, "failed")
+            db.error("ad_daily", "123:2026-01-01:2026-03-31", RuntimeError("Meta temporary error"))
+            db.close()
+
+            def fake_load(_):
+                out = os.path.join(td, "copy.sqlite3")
+                shutil.copy2(meta_path, out)
+                return out
+
+            with patch("engine.dataset_tools._load_parent", side_effect=fake_load):
+                e = dataset_tools.query_dataset("job", {"dataset": "__errors__", "limit": 50})
+            self.assertEqual(e["summary"]["total_errors"], 1)
+            self.assertEqual(e["rows"][0]["account_id"], "123")
+            self.assertEqual(e["rows"][0]["account_name"], "AA Test")
+            self.assertEqual(e["rows"][0]["date_since"], "2026-01-01")
+
+            with patch("engine.dataset_tools._load_parent", side_effect=fake_load):
+                c = dataset_tools.query_dataset("job", {"dataset": "__coverage__", "filters": [{"field": "status", "op": "eq", "value": "failed"}], "limit": 50})
+            self.assertEqual(c["matched_row_count"], 1)
+            self.assertEqual(c["rows"][0]["error_count"], 1)
+            self.assertEqual(c["rows"][0]["account_name"], "AA Test")
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()
