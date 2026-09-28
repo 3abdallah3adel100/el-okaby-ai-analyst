@@ -70,16 +70,15 @@ async function outputJob(e,id,actor){
 }
 
 const tools=[
- {name:'discover_accounts',description:'Discover authorized Meta ad accounts through configured access tokens. No account data is invented; errors and token coverage are returned.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true}},
- {name:'discover_fields',description:'Get the Meta query field/action catalog and constraints. The catalog is advisory; Meta validates requested fields at execution.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true}},
- {name:'query_meta',description:'Run a fresh Meta Marketing API Insights query. Choose arbitrary Meta fields, breakdowns, level, date range or date_preset, account_ids, action_type, row_limit. For large queries use async job polling. Do not treat generic results as a common metric across objectives.',inputSchema:{type:'object',properties:{account_ids:{type:'array',items:{type:'string'}},level:{type:'string',enum:['account','campaign','adset','ad']},fields:{type:'array',items:{type:'string'}},breakdowns:{type:'array',items:{type:'string'}},since:{type:'string'},until:{type:'string'},date_preset:{type:'string'},time_increment:{type:['integer','string']},action_type:{type:'string'},row_limit:{type:'integer',minimum:1,maximum:10000},filtering:{type:'array',items:{type:'object'}}},additionalProperties:false},annotations:{readOnlyHint:true}},
- {name:'inspect_creatives',description:'Read authorized ad creative metadata and media references; does not claim to interpret full video content.',inputSchema:{type:'object',properties:{account_ids:{type:'array',items:{type:'string'}},row_limit:{type:'integer',minimum:1,maximum:500}},additionalProperties:false},annotations:{readOnlyHint:true}},
- {name:'analyze_data',description:'Run fresh Meta queries then deterministic numeric analysis, grouped by chosen fields and with an explicit action_type when calculating costs. Time comparisons and winners are possible without fixed reports.',inputSchema:{type:'object',properties:{query:{type:'object'},group_by:{type:'array',items:{type:'string'}},action_type:{type:'string'},min_spend:{type:'number'},sort_by:{type:'string'},top_n:{type:'integer',minimum:1,maximum:100}},required:['query'],additionalProperties:false},annotations:{readOnlyHint:true}},
- {name:'export_report',description:'Produce a private CSV/XLSX/PDF from an on-demand query; returns a job id then a short-lived download URL from get_job.',inputSchema:{type:'object',properties:{query:{type:'object'},format:{type:'string',enum:['csv','xlsx','pdf']},title:{type:'string'}},required:['query','format'],additionalProperties:false},annotations:{readOnlyHint:true}},
- {name:'get_job',description:'Poll an asynchronous Meta job and return results or a private report download link. Does not re-query cached metrics as current data.',inputSchema:{type:'object',properties:{job_id:{type:'string'}},required:['job_id'],additionalProperties:false},annotations:{readOnlyHint:true}}
+ {name:'discover_accounts',description:'Discover authorized Meta ad accounts through configured access tokens. No account data is invented; errors and token coverage are returned.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'discover_fields',description:'Get the Meta query field/action catalog and constraints. The catalog is advisory; Meta validates requested fields at execution.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'query_meta',description:'Run a fresh Meta Marketing API Insights query. Choose arbitrary Meta fields, breakdowns, level, date range or date_preset, account_ids, action_type, row_limit. For large queries use async job polling. Do not treat generic results as a common metric across objectives.',inputSchema:{type:'object',properties:{account_ids:{type:'array',items:{type:'string'}},level:{type:'string',enum:['account','campaign','adset','ad']},fields:{type:'array',items:{type:'string'}},breakdowns:{type:'array',items:{type:'string'}},since:{type:'string'},until:{type:'string'},date_preset:{type:'string'},time_increment:{type:['integer','string']},action_type:{type:'string'},row_limit:{type:'integer',minimum:1,maximum:10000},filtering:{type:'array',items:{type:'object'}}},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'inspect_creatives',description:'Read authorized ad creative metadata and media references; does not claim to interpret full video content.',inputSchema:{type:'object',properties:{account_ids:{type:'array',items:{type:'string'}},row_limit:{type:'integer',minimum:1,maximum:500}},additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'analyze_data',description:'Run fresh Meta queries then deterministic numeric analysis, grouped by chosen fields and with an explicit action_type when calculating costs. Time comparisons and winners are possible without fixed reports.',inputSchema:{type:'object',properties:{query:{type:'object'},group_by:{type:'array',items:{type:'string'}},action_type:{type:'string'},min_spend:{type:'number'},sort_by:{type:'string'},top_n:{type:'integer',minimum:1,maximum:100}},required:['query'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'export_report',description:'Produce a private CSV/XLSX/PDF from an on-demand query; returns a job id then a short-lived download URL from get_job.',inputSchema:{type:'object',properties:{query:{type:'object'},format:{type:'string',enum:['csv','xlsx','pdf']},title:{type:'string'}},required:['query','format'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]},
+ {name:'get_job',description:'Poll an asynchronous Meta job and return results or a private report download link. Does not re-query cached metrics as current data.',inputSchema:{type:'object',properties:{job_id:{type:'string'}},required:['job_id'],additionalProperties:false},annotations:{readOnlyHint:true},securitySchemes:[{type:'oauth2',scopes:['elokaby:read']}]}
 ];
 async function mcp(req,e){
- if(!await bearer(req,e))return authChallenge(e);
  if(req.method==='GET')return fail('SSE is not supported; use Streamable HTTP POST',405);
  if(req.method!=='POST')return fail('Method not allowed',405);
  let p;try{p=JSON.parse(await bodyLimit(req));}catch{return fail('Invalid JSON');}
@@ -93,6 +92,20 @@ async function mcp(req,e){
  if(method==='ping')return answer({});
  if(method==='tools/list')return answer({tools});
  if(method!=='tools/call')return rpcErr('Method not found',-32601);
+
+ const auth=await bearer(req,e);
+ if(!auth){
+  return answer({
+   content:[{type:'text',text:'Authentication required: no valid access token provided.'}],
+   _meta:{
+    'mcp/www_authenticate':[
+     `Bearer resource_metadata="${base(e)}/.well-known/oauth-protected-resource/mcp", error="insufficient_scope", error_description="Authentication required to use El Okaby AI Analyst"`
+    ]
+   },
+   isError:true
+  });
+ }
+
  const name=p.params?.name,a=p.params?.arguments||{};
  const tool=tools.find(x=>x.name===name);if(!tool)return rpcErr('Unknown tool');
  try{
@@ -227,7 +240,7 @@ async function authorize(req,e){
  const code=randomToken(32);
  await run(d1(e).prepare('INSERT INTO oauth_codes(hash,client_id,redirect_uri,code_challenge,scope,resource,expires) VALUES(?,?,?,?,?,?,?)'),await sha256(code),o.client_id,o.redirect_uri,o.code_challenge,o.scope,o.resource,now()+300);
  const dest=new URL(o.redirect_uri);dest.searchParams.set('code',code);dest.searchParams.set('state',o.state);
- return new Response(null,{status:302,headers:{...headers,location:dest.toString()}});
+ return new Response(null,{status:303,headers:{...headers,location:dest.toString()}});
 }
 async function issue(e,clientId,scope,resourceId){
  const access=randomToken(32),refresh=randomToken(32),t=now();
