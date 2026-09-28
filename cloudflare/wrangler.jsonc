@@ -1,21 +1,29 @@
 {
-  "name": "el-okaby-ai-analyst"
+  "name": "el-okaby-ai-analyst",
   "main": "src/index.mjs",
   "compatibility_date": "2026-09-01",
   "triggers": { "crons": ["0 5 * * *"] },
   "workers_dev": true,
   "vars": {
-   "GITHUB_OWNER": "3abdallah3adel100",
-   "GITHUB_REPO": "el-okaby-ai-analyst",
+    "GITHUB_OWNER": "3abdallah3adel100",
+    "GITHUB_REPO": "el-okaby-ai-analyst",
     "ALLOWED_WA_NUMBERS": "",
     "OAUTH_ALLOWED_REDIRECT_URIS": "",
-    "PUBLIC_BASE_URL": "https://el-okaby-ai-analyst.handballskills98.workers.dev"
+    "PUBLIC_BASE_URL": "https://el-okaby-ai-analyst.handballskills98.workers.dev",
     "META_API_VERSION": "v26.0"
   },
   "d1_databases": [
-    { "binding": "DB", "database_name": "el-okaby-ai-jobs", "database_id": "9c00fb74-1adc-4d43-b8e6-603db8b495cd", "migrations_dir": "migrations" }
+    {
+      "binding": "DB",
+      "database_name": "el-okaby-ai-jobs",
+      "database_id": "9c00fb74-1adc-4d43-b8e6-603db8b495cd",
+      "migrations_dir": "migrations"
+    }
   ],
   "r2_buckets": [
-    { "binding": "REPORTS", "bucket_name": "el-okaby-ai-private-reports" }
+    {
+      "binding": "REPORTS",
+      "bucket_name": "el-okaby-ai-private-reports"
+    }
   ]
 }
