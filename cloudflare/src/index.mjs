@@ -108,7 +108,17 @@ async function mcp(req,e){
 }
 
 function metadata(e){return json({resource:resource(e),authorization_servers:[authServer(e)],scopes_supported:['elokaby:read'],bearer_methods_supported:['header']});}
-function oauthMetadata(e){return json({issuer:authServer(e),authorization_endpoint:base(e)+'/authorize',token_endpoint:base(e)+'/token',registration_endpoint:base(e)+'/register',response_types_supported:['code'],grant_types_supported:['authorization_code','refresh_token'],token_endpoint_auth_methods_supported:['none'],code_challenge_methods_supported:['S256'],scopes_supported:['elokaby:read']});}
+function oauthMetadata(e){return json({
+ issuer:authServer(e),
+ authorization_endpoint:base(e)+'/authorize',
+ token_endpoint:base(e)+'/token',
+ response_types_supported:['code'],
+ grant_types_supported:['authorization_code','refresh_token'],
+ token_endpoint_auth_methods_supported:['none'],
+ code_challenge_methods_supported:['S256'],
+ scopes_supported:['elokaby:read'],
+ client_id_metadata_document_supported:true
+});}
 async function register(req,e){
  if(req.method!=='POST')return fail('Method not allowed',405);
  const ip=await sha256(req.headers.get('cf-connecting-ip')||'unknown');
@@ -122,12 +132,56 @@ async function register(req,e){
  await run(d1(e).prepare('INSERT INTO oauth_clients(client_id,redirect_uris,created_at) VALUES(?,?,?)'),id,JSON.stringify(p.redirect_uris),created);
  return json({client_id:id,client_id_issued_at:created,redirect_uris:p.redirect_uris,grant_types:['authorization_code','refresh_token'],response_types:['code'],token_endpoint_auth_method:'none'},201);
 }
+async function resolveCimdClient(clientId,redirectUri){
+ try{
+  const u=new URL(clientId);
+
+  // This private MCP accepts only OpenAI-hosted ChatGPT CIMD identities.
+  if(
+   u.protocol!=='https:' ||
+   u.hostname!=='chatgpt.com' ||
+   u.username || u.password || u.search || u.hash ||
+   !(
+    u.pathname==='/oauth/client.json' ||
+    /^\/oauth\/[A-Za-z0-9_-]+\/client\.json$/.test(u.pathname)
+   )
+  ) return null;
+
+  const res=await fetch(u.toString(),{
+   method:'GET',
+   headers:{accept:'application/json'},
+   redirect:'error'
+  });
+  if(!res.ok)return null;
+
+  const raw=await res.text();
+  if(raw.length>32768)return null;
+
+  let meta;
+  try{meta=JSON.parse(raw);}catch{return null;}
+
+  const redirects=Array.isArray(meta.redirect_uris)?meta.redirect_uris:[];
+  if(!redirects.includes(redirectUri))return null;
+
+  if(Array.isArray(meta.response_types) && !meta.response_types.includes('code'))return null;
+  if(Array.isArray(meta.grant_types) && !meta.grant_types.includes('authorization_code'))return null;
+
+  const methods=Array.isArray(meta.token_endpoint_auth_methods_supported)
+   ? meta.token_endpoint_auth_methods_supported
+   : (meta.token_endpoint_auth_method?[meta.token_endpoint_auth_method]:[]);
+  if(methods.length && !methods.includes('none'))return null;
+
+  return {client_id:u.toString(),metadata:meta};
+ }catch{
+  return null;
+ }
+}
+
 async function authorize(req,e){
  if(req.method==='GET'){
   const p=new URL(req.url).searchParams,client=p.get('client_id')||'',redirect=p.get('redirect_uri')||'',resourceParam=p.get('resource')||'',challenge=p.get('code_challenge')||'';
-  const clientRow=await row(d1(e).prepare('SELECT redirect_uris FROM oauth_clients WHERE client_id=?'),client);
-  const approved=clientRow?JSON.parse(clientRow.redirect_uris):[];
-  if(!approved.includes(redirect)||!oauthRedirectAllowed(redirect,e.OAUTH_ALLOWED_REDIRECT_URIS)||resourceParam!==resource(e)||p.get('response_type')!=='code'||p.get('code_challenge_method')!=='S256'||!/^[a-zA-Z0-9_-]{43,128}$/.test(challenge)||!(p.get('scope')||'').split(' ').includes('elokaby:read'))return fail('Invalid OAuth authorization request');
+  const cimd=await resolveCimdClient(client,redirect);
+  if(!cimd||!oauthRedirectAllowed(redirect,e.OAUTH_ALLOWED_REDIRECT_URIS)||resourceParam!==resource(e)||p.get('response_type')!=='code'||p.get('code_challenge_method')!=='S256'||!/^[a-zA-Z0-9_-]{43,128}$/.test(challenge)||!(p.get('scope')||'').split(' ').includes('elokaby:read'))return fail('Invalid OAuth authorization request');
   const nonce=randomToken(20),ip=await sha256(req.headers.get('cf-connecting-ip')||'unknown');
   await run(d1(e).prepare('INSERT INTO oauth_intents(id,client_id,redirect_uri,code_challenge,state,scope,resource,ip_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?)'),nonce,client,redirect,challenge,p.get('state')||'','elokaby:read',resourceParam,ip,now());
   return new Response(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>El Okaby authorization</title></head><body><main><h2>El Okaby AI Analyst</h2><p>Authorize read-only access to ad analytics for the connected client.</p><form method="post" action="/authorize"><input type="hidden" name="intent" value="${safeText(nonce)}"><label>Owner password <input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Authorize</button></form></main></body></html>`,{status:200,headers:{...headers,'content-type':'text/html; charset=utf-8','content-security-policy':"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"}});
