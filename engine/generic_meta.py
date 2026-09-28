@@ -117,8 +117,8 @@ def validate_read_spec(spec: dict, *, inherited_time_range: dict | None = None, 
     if not isinstance(account_ids, list) or len(account_ids) > 200:
         raise ValueError("Invalid account_ids")
     account_ids = list(dict.fromkeys(clean_account(x) for x in account_ids))
-    row_limit = int(spec.get("row_limit") or (3000 if quick else 5_000_000))
-    if row_limit < 1 or row_limit > (10_000 if quick else 10_000_000):
+    row_limit = int(spec.get("row_limit") or (3000 if quick else 100_000_000))
+    if row_limit < 1 or row_limit > (10_000 if quick else 250_000_000):
         raise ValueError("row_limit outside allowed range")
     page_limit = int(spec.get("page_limit") or (50 if quick else 100_000))
     if page_limit < 1 or page_limit > (100 if quick else 250_000):
