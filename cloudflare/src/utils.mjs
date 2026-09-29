@@ -29,7 +29,7 @@ export function validJobRequest(a) {
   const mode = String(a.mode || 'query_meta');
   const allowed = [
     'discover_accounts','discover_fields','query_meta','analyze_data','export_report','inspect_creatives','start_historical_audit',
-    'describe_meta_capabilities','meta_read','start_analysis_job','resume_analysis_job','repair_analysis_job','query_job_data','aggregate_job_data'
+    'describe_meta_capabilities','meta_read','start_analysis_job','resume_analysis_job','repair_analysis_job','query_job_data','aggregate_job_data','export_job_data'
   ];
   if (!allowed.includes(mode)) throw new Error('Unsupported request mode');
   const p = a.params || {};
