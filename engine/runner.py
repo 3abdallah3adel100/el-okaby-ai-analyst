@@ -4,6 +4,7 @@ v2 adds an AI-directed generic read engine:
 - meta_read: small fresh arbitrary read request
 - start_analysis_job: one logical, checkpointed, declarative multi-dataset Meta job
 - query_job_data / aggregate_job_data: read stored results without re-querying Meta
+- export_job_data: private CSV/Parquet/Excel exports from stored R2 data
 
 Legacy dynamic tools and start_historical_audit remain available for compatibility.
 """
@@ -84,10 +85,13 @@ def _env_int(name,default):
 def do_job(job):
  data=job['input'];mode=data.get('mode');args=data.get('params') or {}
  # Stored-dataset operations deliberately do not require or call Meta.
- if mode in ('query_job_data','aggregate_job_data'):
-  from .dataset_tools import query_dataset,aggregate_dataset
+ if mode in ('query_job_data','aggregate_job_data','export_job_data'):
   parent=str(args.get('parent_job_id') or '')
   if not parent:raise ValueError('parent_job_id is required')
+  if mode=='export_job_data':
+   from .export_job import run_export_job
+   return run_export_job(job)
+  from .dataset_tools import query_dataset,aggregate_dataset
   value=query_dataset(parent,args) if mode=='query_job_data' else aggregate_dataset(parent,args)
   return value,None,None,False
  heavy = mode in ('start_historical_audit','start_analysis_job','repair_analysis_job')
