@@ -1,19 +1,20 @@
 """Private raw exports from an already persisted start_analysis_job parent dataset.
 
-No Meta API calls are made here. Data is streamed from the parent's SQLite metadata and
-R2 shards, then written to bounded downloadable artifacts.
+v2.5 also supports a special single-job full audit route through the existing export_job_data
+tool, avoiding any Cloudflare/MCP schema change. Use format='xlsx_bundle' with datasets starting
+with '__FULL_AUDIT__'. An optional second item '__POLICY_B64__:<base64url-json>' carries the
+ChatGPT-generated analysis policy for the one heavy stored-data analysis job.
 """
 from __future__ import annotations
 
-import csv
-import io
+import base64
+import gzip
 import json
 import os
 import sqlite3
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Iterable
 
 import xlsxwriter
 
@@ -21,6 +22,20 @@ from .dataset_tools import _iter_rows, _load_parent, _manifest
 
 ZIP_MIME = "application/zip"
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _decode_policy(items):
+    for item in items or []:
+        s = str(item or "")
+        if not s.startswith("__POLICY_B64__:"):
+            continue
+        raw = s.split(":", 1)[1]
+        pad = "=" * ((4 - len(raw) % 4) % 4)
+        try:
+            return json.loads(base64.urlsafe_b64decode(raw + pad).decode("utf-8"))
+        except Exception as ex:
+            raise ValueError("Invalid __POLICY_B64__ payload") from ex
+    return {}
 
 
 def _json_scalar(v):
@@ -169,7 +184,6 @@ def _make_duckdb_zip(parent_job_id: str, db: sqlite3.Connection, datasets: list[
                 _dump_jsonl(parent_job_id, db, ds, jsonl)
                 count = _dataset_count(db, ds)
                 if count == 0:
-                    # Preserve zero-row datasets in the manifest without producing an invalid empty parquet.
                     manifest["datasets"].append({"name": ds, "row_count": 0, "file": None})
                     continue
                 src = _sqlq(jsonl)
@@ -185,7 +199,7 @@ def _make_duckdb_zip(parent_job_id: str, db: sqlite3.Connection, datasets: list[
                     dst = _sqlq(out)
                     con.execute(
                         f"COPY (SELECT * FROM read_json_auto('{src}', format='newline_delimited', union_by_name=true, maximum_object_size=104857600)) "
-                        f"TO '{dst}' (FORMAT CSV, HEADER TRUE, DELIMITER ',', QUOTE '" + '"' + "', ESCAPE '" + '"' + "')"
+                        f"TO '{dst}' (FORMAT CSV, HEADER TRUE)"
                     )
                 manifest["datasets"].append({"name": ds, "row_count": count, "file": out.name})
                 try: jsonl.unlink()
@@ -207,7 +221,25 @@ def run_export_job(job: dict):
     parent_job_id = str(params.get("parent_job_id") or "")
     if not parent_job_id:
         raise ValueError("parent_job_id is required")
+
     fmt = str(params.get("format") or "parquet_zip")
+    requested = params.get("datasets")
+
+    # v2.5: special route using the EXISTING export_job_data tool. This creates exactly one
+    # GitHub Action for the entire stored-data audit and final XLSX, preventing query-job storms.
+    if fmt == "xlsx_bundle" and isinstance(requested, list) and requested and str(requested[0]) == "__FULL_AUDIT__":
+        from .stored_analysis_job import run_stored_analysis_job
+        policy = _decode_policy(requested[1:])
+        if not policy:
+            raise ValueError("__FULL_AUDIT__ requires a ChatGPT-generated __POLICY_B64__ payload; backend fixed defaults are not accepted as the sole analysis policy")
+        forwarded = dict(job)
+        forwarded_input = dict(job.get("input") or {})
+        forwarded_params = dict(params)
+        forwarded_params["analysis_policy"] = policy
+        forwarded_input["params"] = forwarded_params
+        forwarded["input"] = forwarded_input
+        return run_stored_analysis_job(forwarded)
+
     if fmt not in {"parquet_zip", "csv_zip", "xlsx_bundle", "xlsx_part"}:
         raise ValueError("Unsupported export format")
     path = _load_parent(parent_job_id)
@@ -215,7 +247,6 @@ def run_export_job(job: dict):
     try:
         db = sqlite3.connect(path)
         db.row_factory = sqlite3.Row
-        requested = params.get("datasets")
         if requested is not None and (not isinstance(requested, list) or len(requested) > 20):
             raise ValueError("datasets must be an array with at most 20 items")
         datasets = _dataset_names(db, requested)
@@ -229,7 +260,6 @@ def run_export_job(job: dict):
                 "note": "Full stored raw export; no new Meta API call.",
             }, payload, ZIP_MIME, False
         if fmt == "xlsx_bundle":
-            # Intended for the smaller datasets. Keep a hard total-row bound so the report remains downloadable.
             total = sum(_dataset_count(db, ds) for ds in datasets)
             if total > 120_000:
                 raise ValueError("xlsx_bundle is limited to 120000 total rows; export large datasets with xlsx_part")
